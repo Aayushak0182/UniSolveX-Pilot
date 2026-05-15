@@ -1,0 +1,61 @@
+{
+  "settings": {
+    "projectName": "UniSolveX Pilot",
+    "slogan": "Automate. Reach. Grow.",
+    "workspaceEmail": "",
+    "adminEmails": [],
+    "billing": {
+      "planName": "Starter",
+      "renewalDate": "",
+      "amount": "",
+      "status": "inactive"
+    },
+    "firebase": {
+      "apiKey": "AIzaSyBT5JHdKOanXqtyzLPnQfCk9zCpK2LmQWo",
+      "authDomain": "unisolvex-pilot.firebaseapp.com",
+      "projectId": "unisolvex-pilot",
+      "storageBucket": "unisolvex-pilot.firebasestorage.app",
+      "messagingSenderId": "927520165953",
+      "appId": "1:927520165953:web:c49e000896ce269a5ef6c0",
+      "measurementId": "G-N0DYG90N5H"
+    },
+    "cloudinary": {
+      "cloudName": "",
+      "uploadPreset": "",
+      "folder": "unisolvex-pilot"
+    }
+  },
+  "campaigns": [],
+  "schedulerRules": [],
+  "accounts": [],
+  "groups": [],
+  "templates": [],
+  "mediaItems": [],
+  "aiDrafts": [],
+  "leads": [],
+  "inboxMessages": [],
+  "teamMembers": [],
+  "supportTickets": [],
+  "logs": [
+    {
+      "id": "log_1778262841632_s8gnao",
+      "type": "campaigns",
+      "message": "campaigns item deleted",
+      "status": "info",
+      "meta": {
+        "itemId": "campaign_1778262831658_sjf660"
+      },
+      "createdAt": "2026-05-08T17:54:01.632Z"
+    },
+    {
+      "id": "log_1778262831667_iki412",
+      "type": "campaign",
+      "message": "Campaign created: Aayush Kumar",
+      "status": "success",
+      "meta": {
+        "campaignId": "campaign_1778262831658_sjf660"
+      },
+      "createdAt": "2026-05-08T17:53:51.667Z"
+    }
+  ]
+}

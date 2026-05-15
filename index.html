@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>UniSolveX Pilot</title>
+    <link rel="icon" type="image/x-icon" href="./favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+    <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+    <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+    <script defer src="./app-config.js"></script>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="auth-locked">
+    <section id="auth-screen" class="auth-screen">
+      <div class="auth-backdrop auth-orb-one"></div>
+      <div class="auth-backdrop auth-orb-two"></div>
+      <div class="auth-grid">
+        <article class="auth-story glass">
+          <span class="eyebrow">Unified Growth Desk</span>
+          <h1>Launch campaigns, track support, and manage daily execution from one sharp workspace.</h1>
+          <p>
+            Sign in to open your live dashboard, schedule daily templates, manage team workflows, and route support tickets to the right admin queue.
+          </p>
+          <div class="auth-highlights">
+            <div class="auth-chip">Campaign control</div>
+            <div class="auth-chip">Daily automation</div>
+            <div class="auth-chip">Support queue</div>
+            <div class="auth-chip">Role-based access</div>
+          </div>
+          <div class="auth-metric-row">
+            <div class="auth-metric glass-soft"><strong>24x7</strong><span>Always-on workspace access</span></div>
+            <div class="auth-metric glass-soft"><strong>Smart AI</strong><span>Cleaner marketing copy generation</span></div>
+          </div>
+        </article>
+
+        <article class="auth-card glass">
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">Secure Access</span>
+              <h3>Welcome back</h3>
+            </div>
+          </div>
+          <p class="auth-copy">Use your saved workspace email to continue.</p>
+          <form id="signin-form" class="form-grid auth-form">
+            <label>Email<input type="email" name="email" required /></label>
+            <label>Password<input type="password" name="password" required /></label>
+            <div class="full">
+              <button type="submit" class="primary-button auth-submit">Open Workspace</button>
+            </div>
+          </form>
+          <div id="auth-status" class="auth-status">Preparing sign-in...</div>
+        </article>
+      </div>
+    </section>
+
+    <div class="app-shell">
+      <aside class="sidebar glass">
+        <div class="brand">
+          <img src="./favicon.ico" alt="UniSolveX Pilot" class="brand-logo" />
+          <div class="brand-copy">
+            <h1 id="brand-title">UniSolveX Pilot</h1>
+            <p id="brand-slogan">Automate. Reach. Grow.</p>
+          </div>
+        </div>
+
+        <nav class="menu">
+          <button class="menu-item active" data-section="dashboard"><span class="menu-icon">&#9639;</span><span>Dashboard</span></button>
+          <button class="menu-item" data-section="campaigns"><span class="menu-icon">&#8981;</span><span>Campaigns</span></button>
+          <button class="menu-item" data-section="scheduled"><span class="menu-icon">&#9716;</span><span>Scheduled Posts</span></button>
+          <button class="menu-item" data-section="accounts"><span class="menu-icon">&#9673;</span><span>Accounts</span></button>
+          <button class="menu-item" data-section="groups"><span class="menu-icon">&#9711;</span><span>Groups / Channels</span></button>
+          <button class="menu-item" data-section="templates"><span class="menu-icon">&#9998;</span><span>Message Templates</span></button>
+          <button class="menu-item" data-section="media"><span class="menu-icon">&#9635;</span><span>Media Library</span></button>
+          <button class="menu-item" data-section="writer"><span class="menu-icon">&#10022;</span><span>AI Content Generator</span></button>
+          <button class="menu-item" data-section="leads"><span class="menu-icon">&#9671;</span><span>Leads / CRM</span></button>
+          <button class="menu-item" data-section="inbox"><span class="menu-icon">&#9993;</span><span>Inbox</span><strong class="count-badge" id="menu-inbox-count">0</strong></button>
+          <button class="menu-item" data-section="analytics"><span class="menu-icon">&#9651;</span><span>Analytics</span></button>
+          <button class="menu-item" data-section="logs"><span class="menu-icon">&#9776;</span><span>Logs</span></button>
+          <button class="menu-item" data-section="settings" data-admin-only><span class="menu-icon">&#9881;</span><span>Settings</span></button>
+          <button class="menu-item" data-section="billing" data-admin-only><span class="menu-icon">&#9646;</span><span>Billing</span></button>
+          <button class="menu-item" data-section="team" data-admin-only><span class="menu-icon">&#9685;</span><span>Team</span></button>
+          <button class="menu-item" data-section="support"><span class="menu-icon">?</span><span>Help & Support</span></button>
+        </nav>
+      </aside>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <div>
+            <h2 id="page-title">Dashboard</h2>
+            <p id="page-subtitle">A premium control center for campaigns, content, channels, leads, and operations.</p>
+          </div>
+          <div class="toolbar">
+            <button class="primary-button" data-jump="campaigns">Create Campaign</button>
+            <button class="ghost-button" id="admin-create-account-button" type="button" data-admin-only>Create Account</button>
+            <button class="ghost-button" data-jump="settings" data-admin-only>Setup</button>
+            <button class="ghost-button" id="auth-open-button" type="button">Profile</button>
+          </div>
+        </header>
+
+        <div id="toast" class="toast hidden"></div>
+
+        <section id="dashboard" class="view-section active">
+          <div class="stats-grid">
+            <article class="stat-card glass"><span>Active Campaigns</span><strong id="stat-active-campaigns">0</strong><small>Real backend count</small></article>
+            <article class="stat-card glass"><span>Scheduled Posts</span><strong id="stat-scheduled-posts">0</strong><small>Queued automation rules</small></article>
+            <article class="stat-card glass"><span>Connected Groups</span><strong id="stat-connected-groups">0</strong><small>Live channels mapped</small></article>
+            <article class="stat-card glass"><span>Success Rate</span><strong id="stat-success-rate">0%</strong><small>Based on CRM logs</small></article>
+            <article class="stat-card glass"><span>AI Drafts</span><strong id="stat-ai-drafts">0</strong><small>Generated content pieces</small></article>
+            <article class="stat-card glass"><span>Open Tickets</span><strong id="stat-open-tickets">0</strong><small>Support requests in queue</small></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <article class="panel glass wide-panel">
+              <div class="section-head"><div><span class="eyebrow">Queue</span><h3>Upcoming Scheduled Posts</h3></div></div>
+              <div id="upcoming-queue" class="list"></div>
+            </article>
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Platforms</span><h3>Channel Mix</h3></div></div>
+              <div id="platform-stats" class="stack"></div>
+            </article>
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Activity</span><h3>Recent Logs</h3></div></div>
+              <div id="recent-logs" class="list compact"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="campaigns" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Create</span><h3>Campaign Manager</h3></div></div>
+              <form id="campaign-form" class="form-grid">
+                <label>Campaign Name<input type="text" name="name" required /></label>
+                <label>Status<select name="status"><option value="draft">Draft</option><option value="active">Active</option><option value="paused">Paused</option></select></label>
+                <label class="full">Description<textarea name="description" rows="3"></textarea></label>
+                <label class="full">Platforms
+                  <div class="checkbox-row">
+                    <label><input type="checkbox" name="platforms" value="telegram" />Telegram</label>
+                    <label><input type="checkbox" name="platforms" value="facebook" />Facebook</label>
+                    <label><input type="checkbox" name="platforms" value="discord" />Discord</label>
+                    <label><input type="checkbox" name="platforms" value="whatsapp" />WhatsApp</label>
+                  </div>
+                </label>
+                <label class="full">Caption<textarea name="caption" rows="3"></textarea></label>
+                <label>CTA<input type="text" name="cta" /></label>
+                <label>Media URL<input type="url" name="mediaUrl" placeholder="https://..." /></label>
+                <label>Media Attachment<input type="file" name="mediaFile" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip" /></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Save Campaign</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Saved</span><h3>Campaign List</h3></div></div><div id="campaign-list" class="list"></div></article>
+          </div>
+        </section>
+
+        <section id="scheduled" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Configure</span><h3>Scheduled Posts / Auto Scheduler</h3></div></div>
+              <form id="scheduler-form" class="form-grid">
+                <label>Rule Name<input type="text" name="name" required /></label>
+                <label>Campaign<select name="campaignId" id="scheduler-campaign-select"></select></label>
+                <label>Mode<select name="mode"><option value="interval">Every X mins</option><option value="daily">Daily timing</option><option value="weekly">Selected days</option></select></label>
+                <label>Status<select name="status"><option value="queued">Queued</option><option value="running">Running</option><option value="paused">Paused</option></select></label>
+                <label>Interval Minutes<input type="number" name="intervalMinutes" min="1" /></label>
+                <label>Daily Time<input type="time" name="dailyTime" /></label>
+                <label class="full">Select Days
+                  <div class="checkbox-row">
+                    <label><input type="checkbox" name="days" value="all_days" />All Days</label>
+                    <label><input type="checkbox" name="days" value="monday" />Monday</label>
+                    <label><input type="checkbox" name="days" value="tuesday" />Tuesday</label>
+                    <label><input type="checkbox" name="days" value="wednesday" />Wednesday</label>
+                    <label><input type="checkbox" name="days" value="thursday" />Thursday</label>
+                    <label><input type="checkbox" name="days" value="friday" />Friday</label>
+                    <label><input type="checkbox" name="days" value="saturday" />Saturday</label>
+                    <label><input type="checkbox" name="days" value="sunday" />Sunday</label>
+                  </div>
+                </label>
+                <label>Random Delay Seconds<input type="number" name="randomDelaySeconds" min="0" /></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Save Rule</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Queue</span><h3>Scheduler Rules</h3></div></div><div id="scheduler-list" class="list"></div></article>
+          </div>
+        </section>
+
+        <section id="accounts" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Connect</span><h3>Accounts</h3></div></div>
+              <form id="account-form" class="form-grid">
+                <label>Platform<select name="platform"><option value="telegram">Telegram</option><option value="facebook">Facebook</option><option value="discord">Discord</option><option value="whatsapp">WhatsApp</option></select></label>
+                <label>Account Name<input type="text" name="accountName" required /></label>
+                <label>Handle / ID<input type="text" name="accountHandle" /></label>
+                <label>Status<select name="status"><option value="connected">Connected</option><option value="pending">Pending</option><option value="paused">Paused</option></select></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Save Account</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Connected</span><h3>Account List</h3></div></div><div id="account-list" class="list"></div></article>
+          </div>
+        </section>
+
+        <section id="groups" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Manage</span><h3>Groups / Channels</h3></div></div>
+              <form id="group-form" class="form-grid">
+                <label>Group / Channel Name<input type="text" name="name" required /></label>
+                <label>Platform<select name="platform" required><option value="telegram">Telegram</option><option value="facebook">Facebook</option><option value="discord">Discord</option><option value="whatsapp">WhatsApp</option></select></label>
+                <label class="full">Import Link<input type="url" name="inviteLink" placeholder="https://..." /></label>
+                <label class="full">Link Attachment<input type="file" name="inviteFile" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" /></label>
+                <label class="full">Category Tags<input type="text" name="categoryTags" placeholder="education, premium, leads" /></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Connect Channel</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Connected</span><h3>Channel List</h3></div></div><div id="group-list" class="list"></div></article>
+          </div>
+        </section>
+
+        <section id="templates" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Write</span><h3>Message Templates</h3></div></div>
+              <form id="template-form" class="form-grid">
+                <label>Template Title<input type="text" name="title" required /></label>
+                <label>Channel<select name="channel"><option value="telegram">Telegram</option><option value="facebook">Facebook</option><option value="discord">Discord</option><option value="whatsapp">WhatsApp</option></select></label>
+                <label class="full">Template Body<textarea name="body" rows="5"></textarea></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Save Template</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Saved</span><h3>Template Library</h3></div></div><div id="template-list" class="list"></div></article>
+          </div>
+        </section>
+
+        <section id="media" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Upload</span><h3>Media Library</h3></div></div>
+              <form id="media-form" class="form-grid">
+                <label>Asset Name<input type="text" name="name" required /></label>
+                <label>Media Type<select name="type"><option value="image">Image</option><option value="video">Video</option><option value="document">Document</option><option value="banner">Banner</option></select></label>
+                <label class="full">Upload File<input type="file" name="file" /></label>
+                <label class="full">Asset URL<input type="url" name="url" placeholder="https://... or leave empty for cloud upload" /></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Save Media</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Assets</span><h3>Stored Media</h3></div></div><div id="media-list" class="list"></div></article>
+          </div>
+        </section>
+
+        <section id="writer" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Generate</span><h3>AI Content Generator</h3></div></div>
+              <form id="writer-form" class="form-grid">
+                <label>Topic / Offer<input type="text" name="topic" required /></label>
+                <label>Audience<input type="text" name="audience" required /></label>
+                <label>Tone<select name="tone"><option value="confident">Confident</option><option value="friendly">Friendly</option><option value="urgent">Urgent</option><option value="premium">Premium</option></select></label>
+                <label>Emoji Style<select name="emojiStyle"><option value="balanced">Balanced</option><option value="low">Low</option><option value="high">High</option></select></label>
+                <label class="full">CTA Goal<input type="text" name="ctaGoal" placeholder="Join now, DM us, register today" /></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Generate Draft</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Drafts</span><h3>Generated Content</h3></div></div><div id="writer-list" class="list"></div></article>
+          </div>
+        </section>
+
+        <section id="leads" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Capture</span><h3>Leads / CRM</h3></div></div>
+              <form id="lead-form" class="form-grid">
+                <label>Lead Name<input type="text" name="name" required /></label>
+                <label>Source<input type="text" name="source" placeholder="telegram, ad, referral" /></label>
+                <label>Stage<select name="stage"><option value="new">New</option><option value="contacted">Contacted</option><option value="qualified">Qualified</option><option value="won">Won</option></select></label>
+                <label>Contact<input type="text" name="contact" /></label>
+                <label class="full">Note<textarea name="note" rows="3"></textarea></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Save Lead</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Pipeline</span><h3>Lead List</h3></div></div><div id="lead-list" class="list"></div></article>
+          </div>
+        </section>
+
+        <section id="inbox" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Capture</span><h3>Inbox</h3></div></div>
+              <form id="inbox-form" class="form-grid">
+                <label>Sender<input type="text" name="sender" required /></label>
+                <label>Platform<select name="platform"><option value="telegram">Telegram</option><option value="facebook">Facebook</option><option value="discord">Discord</option><option value="whatsapp">WhatsApp</option></select></label>
+                <label>Status<select name="status"><option value="unread">Unread</option><option value="open">Open</option><option value="replied">Replied</option></select></label>
+                <label class="full">Message<textarea name="message" rows="4"></textarea></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Save Message</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Messages</span><h3>Inbox Feed</h3></div></div><div id="inbox-list" class="list"></div></article>
+          </div>
+        </section>
+
+        <section id="analytics" class="view-section">
+          <div class="dashboard-grid">
+            <article class="panel glass wide-panel"><div class="section-head"><div><span class="eyebrow">Overview</span><h3>Performance Snapshot</h3></div></div><div id="analytics-summary" class="stack"></div></article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Counts</span><h3>Quick Metrics</h3></div></div><div class="metric-stack"><div class="metric-box"><span>AI Drafts</span><strong id="metric-ai-drafts">0</strong></div><div class="metric-box"><span>Leads</span><strong id="metric-leads">0</strong></div><div class="metric-box"><span>Logs</span><strong id="metric-logs">0</strong></div></div></article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Status</span><h3>Execution Note</h3></div></div><div class="empty-note">This workspace is ready for delivery tracking and deeper platform integrations whenever those APIs are connected.</div></article>
+          </div>
+        </section>
+
+        <section id="logs" class="view-section">
+          <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Timeline</span><h3>System Logs</h3></div></div><div id="full-log-list" class="list"></div></article>
+        </section>
+
+        <section id="settings" class="view-section" data-admin-only>
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Workspace</span><h3>Settings</h3></div></div>
+              <form id="settings-form" class="form-grid">
+                <label>Project Name<input type="text" name="projectName" required /></label>
+                <label>Workspace Email<input type="email" name="workspaceEmail" /></label>
+                <label class="full">Slogan<input type="text" name="slogan" /></label>
+                <label>Access API Key<input type="text" name="apiKey" /></label>
+                <label>Auth Domain<input type="text" name="authDomain" /></label>
+                <label>Project ID<input type="text" name="projectId" /></label>
+                <label>Storage Bucket<input type="text" name="storageBucket" /></label>
+                <label>Messaging Sender ID<input type="text" name="messagingSenderId" /></label>
+                <label class="full">App ID<input type="text" name="appId" /></label>
+                <label>Cloud Name<input type="text" name="cloudName" /></label>
+                <label>Upload Preset<input type="text" name="uploadPreset" /></label>
+                <label class="full">Cloud Folder<input type="text" name="cloudinaryFolder" /></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Save Settings</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Integration</span><h3>Notes</h3></div></div><div class="list compact"><div class="list-item"><strong>Secure Sign-in</strong><span>Workspace entry for approved users</span></div><div class="list-item"><strong>Cloud Database</strong><span>Lead and inbox sync when access is ready</span></div><div class="list-item"><strong>Cloud Uploads</strong><span>Media files stored through your configured upload service</span></div><div class="list-item"><strong>Local Backup</strong><span>All CRM modules still persist in the backend store</span></div></div></article>
+          </div>
+        </section>
+
+        <section id="billing" class="view-section" data-admin-only>
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Plan</span><h3>Billing</h3></div></div>
+              <form id="billing-form" class="form-grid">
+                <label>Plan Name<input type="text" name="planName" /></label>
+                <label>Status<select name="status"><option value="inactive">Inactive</option><option value="active">Active</option><option value="trial">Trial</option></select></label>
+                <label>Renewal Date<input type="date" name="renewalDate" /></label>
+                <label>Amount<input type="text" name="amount" placeholder="4999 INR" /></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Save Billing</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Current</span><h3>Billing Summary</h3></div></div><div id="billing-summary" class="stack"></div></article>
+          </div>
+        </section>
+
+        <section id="team" class="view-section" data-admin-only>
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Access</span><h3>Admin Team Control</h3></div></div>
+              <div class="empty-note">Use the Create Account button at the top to add new admins or executives without leaving the workspace.</div>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Members</span><h3>Team List</h3></div></div><div id="team-list" class="list"></div></article>
+          </div>
+        </section>
+
+        <section id="support" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Raise</span><h3>Help & Support</h3></div></div>
+              <form id="support-form" class="form-grid">
+                <label>Subject<input type="text" name="subject" required /></label>
+                <label>Priority<select name="priority"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+                <label class="full">Description<textarea name="description" rows="4"></textarea></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Create Ticket</button></div>
+              </form>
+            </article>
+            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Tickets</span><h3 id="support-queue-title">Support Queue</h3></div></div><div id="support-list" class="list"></div></article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="session-modal" class="modal hidden">
+      <div class="modal-card glass">
+        <div class="section-head">
+          <div><span class="eyebrow">Workspace Session</span><h3>Your Access</h3></div>
+          <button class="ghost-button" id="session-close-button" type="button">Close</button>
+        </div>
+        <div class="profile-summary">
+          <strong id="profile-email">-</strong>
+          <span id="profile-role">Role not available</span>
+        </div>
+        <div class="auth-actions">
+          <button type="button" class="danger-button" id="logout-button">Logout</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="create-account-modal" class="modal hidden">
+      <div class="modal-card glass">
+        <div class="section-head">
+          <div><span class="eyebrow">Admin Only</span><h3>Create Account</h3></div>
+          <button class="ghost-button" id="create-account-close-button" type="button">Close</button>
+        </div>
+        <form id="create-account-form" class="form-grid">
+          <label>Name<input type="text" name="name" required /></label>
+          <label>Email<input type="email" name="email" required /></label>
+          <label>Password<input type="password" name="password" required minlength="6" /></label>
+          <label>Role<select name="role"><option value="executive">Executive</option><option value="admin">Admin</option></select></label>
+          <div class="full action-end"><button type="submit" class="primary-button">Create Account</button></div>
+        </form>
+      </div>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

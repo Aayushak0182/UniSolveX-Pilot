@@ -1,0 +1,13 @@
+{
+  "name": "unisolvex-pilot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "UniSolveX Pilot full-stack CRM prototype",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "firebase": "^12.13.0",
+    "firebase-admin": "^13.9.0"
+  }
+}
