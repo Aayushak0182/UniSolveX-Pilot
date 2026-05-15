@@ -7,7 +7,7 @@ loadEnvFile(path.join(__dirname, ".env"))
 
 const PORT = process.env.PORT || 3000
 const ROOT = __dirname
-const DATA_DIR = path.join(ROOT, "data")
+const DATA_DIR = resolveDataDir()
 const STORE_FILE = path.join(DATA_DIR, "store.json")
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ""
 const ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL || "")
@@ -37,7 +37,7 @@ const COLLECTION_MAP = {
 
 ensureStore()
 
-const server = http.createServer(async (req, res) => {
+const requestListener = async (req, res) => {
   setCorsHeaders(res)
 
   if (req.method === "OPTIONS") {
@@ -56,11 +56,22 @@ const server = http.createServer(async (req, res) => {
   }
 
   serveStatic(url.pathname, res)
-})
+}
 
-server.listen(PORT, () => {
-  console.log(`UniSolveX Pilot server running on http://localhost:${PORT}`)
-})
+const server = http.createServer(requestListener)
+
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`UniSolveX Pilot server running on http://localhost:${PORT}`)
+  })
+}
+
+function resolveDataDir() {
+  if (process.env.VERCEL) {
+    return path.join("/tmp", "unisolvex-pilot-data")
+  }
+  return path.join(ROOT, "data")
+}
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return
@@ -772,4 +783,9 @@ function serveStatic(pathname, res) {
   const ext = path.extname(filePath)
   res.writeHead(200, { "Content-Type": MIME_TYPES[ext] || "application/octet-stream" })
   fs.createReadStream(filePath).pipe(res)
+}
+
+module.exports = {
+  requestListener,
+  handleApi,
 }
