@@ -1,8 +1,55 @@
 {
-  "rewrites": [
+  "version": 2,
+  "builds": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api"
+      "src": "api/index.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "index.html",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "app.js",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "app-config.js",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "styles.css",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "favicon.ico",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "^/api/(.*)$",
+      "dest": "/api/index.js"
+    },
+    {
+      "src": "^/$",
+      "dest": "/index.html"
+    },
+    {
+      "src": "^/app\\.js$",
+      "dest": "/app.js"
+    },
+    {
+      "src": "^/app-config\\.js$",
+      "dest": "/app-config.js"
+    },
+    {
+      "src": "^/styles\\.css$",
+      "dest": "/styles.css"
+    },
+    {
+      "src": "^/favicon\\.ico$",
+      "dest": "/favicon.ico"
     }
   ]
 }
