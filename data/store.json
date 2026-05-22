@@ -3,7 +3,9 @@
     "projectName": "UniSolveX Pilot",
     "slogan": "Automate. Reach. Grow.",
     "workspaceEmail": "",
-    "adminEmails": [],
+    "adminEmails": [
+      "aayushak0182@gmail.com"
+    ],
     "billing": {
       "planName": "Starter",
       "renewalDate": "",
@@ -20,8 +22,8 @@
       "measurementId": "G-N0DYG90N5H"
     },
     "cloudinary": {
-      "cloudName": "",
-      "uploadPreset": "",
+      "cloudName": "dtudnpopk",
+      "uploadPreset": "ml_default",
       "folder": "unisolvex-pilot"
     }
   },

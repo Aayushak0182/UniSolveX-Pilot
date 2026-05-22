@@ -76,6 +76,7 @@
           <button class="menu-item" data-section="scheduled"><span class="menu-icon">&#9716;</span><span>Scheduled Posts</span></button>
           <button class="menu-item" data-section="accounts"><span class="menu-icon">&#9673;</span><span>Accounts</span></button>
           <button class="menu-item" data-section="groups"><span class="menu-icon">&#9711;</span><span>Groups / Channels</span></button>
+          <button class="menu-item" data-section="telegram"><span class="menu-icon">&#9992;</span><span>Telegram Share</span></button>
           <button class="menu-item" data-section="templates"><span class="menu-icon">&#9998;</span><span>Message Templates</span></button>
           <button class="menu-item" data-section="media"><span class="menu-icon">&#9635;</span><span>Media Library</span></button>
           <button class="menu-item" data-section="writer"><span class="menu-icon">&#10022;</span><span>AI Content Generator</span></button>
@@ -198,6 +199,9 @@
                 <label>Platform<select name="platform"><option value="telegram">Telegram</option><option value="facebook">Facebook</option><option value="discord">Discord</option><option value="whatsapp">WhatsApp</option></select></label>
                 <label>Account Name<input type="text" name="accountName" required /></label>
                 <label>Handle / ID<input type="text" name="accountHandle" /></label>
+                <label>Phone Number<input type="text" name="phoneNumber" placeholder="+91..." /></label>
+                <label>Telegram API ID<input type="number" name="apiId" placeholder="123456" /></label>
+                <label class="full">Telegram API Hash<input type="text" name="apiHash" placeholder="Required for real Telegram automation" /></label>
                 <label>Status<select name="status"><option value="connected">Connected</option><option value="pending">Pending</option><option value="paused">Paused</option></select></label>
                 <div class="full action-end"><button type="submit" class="primary-button">Save Account</button></div>
               </form>
@@ -213,6 +217,7 @@
               <form id="group-form" class="form-grid">
                 <label>Group / Channel Name<input type="text" name="name" required /></label>
                 <label>Platform<select name="platform" required><option value="telegram">Telegram</option><option value="facebook">Facebook</option><option value="discord">Discord</option><option value="whatsapp">WhatsApp</option></select></label>
+                <label class="full">Telegram Peer / Username<input type="text" name="telegramPeer" placeholder="@channelusername or @groupusername" /></label>
                 <label class="full">Import Link<input type="url" name="inviteLink" placeholder="https://..." /></label>
                 <label class="full">Link Attachment<input type="file" name="inviteFile" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" /></label>
                 <label class="full">Category Tags<input type="text" name="categoryTags" placeholder="education, premium, leads" /></label>
@@ -236,6 +241,44 @@
             </article>
             <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Saved</span><h3>Template Library</h3></div></div><div id="template-list" class="list"></div></article>
           </div>
+        </section>
+
+        <section id="telegram" class="view-section">
+          <div class="two-col">
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Connect</span><h3>Telegram Real Account Automation</h3></div></div>
+              <form id="telegram-auth-start-form" class="form-grid">
+                <label>Telegram Account<select name="accountId" id="telegram-auth-account-select"></select></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Send Login Code</button></div>
+              </form>
+              <form id="telegram-auth-verify-form" class="form-grid">
+                <label>Telegram Account<select name="accountId" id="telegram-verify-account-select"></select></label>
+                <label>OTP / Login Code<input type="text" name="phoneCode" placeholder="Telegram code" required /></label>
+                <label>2FA Password<input type="password" name="password" placeholder="Only if enabled" /></label>
+                <div class="full action-end"><button type="submit" class="primary-button">Verify & Connect</button></div>
+              </form>
+              <div class="empty-note" id="telegram-connection-note">Save a Telegram account with phone number, API ID, and API hash first. Then request the code and verify the session once.</div>
+            </article>
+            <article class="panel glass">
+              <div class="section-head"><div><span class="eyebrow">Post</span><h3>Direct Telegram Posting</h3></div></div>
+              <form id="telegram-share-form" class="form-grid">
+                <label>Telegram Account<select name="accountId" id="telegram-account-select"></select></label>
+                <label>Group / Channel<select name="groupId" id="telegram-group-select"></select></label>
+                <label>Target Peer<input type="text" name="targetPeer" id="telegram-target-peer" placeholder="@channelusername or @groupusername" /></label>
+                <label>Campaign<select name="campaignId" id="telegram-campaign-select"></select></label>
+                <label>Template<select name="templateId" id="telegram-template-select"></select></label>
+                <label class="full">Message<textarea name="customMessage" id="telegram-message" rows="6" placeholder="Select a template or campaign to prefill your Telegram message."></textarea></label>
+                <div class="full">
+                  <div class="empty-note" id="telegram-preview">Telegram preview will appear here once you select a template or campaign.</div>
+                </div>
+                <div class="full action-end"><button type="submit" class="primary-button">Post Message Now</button></div>
+              </form>
+            </article>
+          </div>
+          <article class="panel glass">
+            <div class="section-head"><div><span class="eyebrow">History</span><h3>Recent Telegram Shares</h3></div></div>
+            <div id="telegram-dispatch-list" class="list"></div>
+          </article>
         </section>
 
         <section id="media" class="view-section">

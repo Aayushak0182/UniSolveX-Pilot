@@ -2,6 +2,8 @@ const http = require("http")
 const fs = require("fs")
 const path = require("path")
 const { URL } = require("url")
+const { TelegramClient, Api } = require("telegram")
+const { StringSession } = require("telegram/sessions")
 
 loadEnvFile(path.join(__dirname, ".env"))
 
@@ -435,19 +437,90 @@ function buildDashboard(store) {
   }
 }
 
+function sanitizeApiId(value) {
+  const parsed = Number.parseInt(String(value || "").trim(), 10)
+  return Number.isFinite(parsed) ? parsed : ""
+}
+
+function maskSecret(value) {
+  const text = String(value || "")
+  if (!text) return ""
+  if (text.length <= 6) return "*".repeat(text.length)
+  return `${text.slice(0, 3)}${"*".repeat(Math.max(3, text.length - 6))}${text.slice(-3)}`
+}
+
+function sanitizeAccountForClient(account = {}) {
+  return {
+    ...account,
+    apiHash: undefined,
+    sessionString: undefined,
+    pendingSessionString: undefined,
+    pendingPhoneCodeHash: undefined,
+    pendingPhoneNumber: undefined,
+    apiHashMasked: maskSecret(account.apiHash),
+    isTelegramConnected: account.sessionStatus === "connected",
+  }
+}
+
+function sanitizeGroupForClient(group = {}) {
+  return {
+    ...group,
+    telegramPeer: group.telegramPeer || "",
+  }
+}
+
+function getTelegramApiCredentials(account) {
+  return {
+    apiId: Number(account.apiId),
+    apiHash: String(account.apiHash || "").trim(),
+  }
+}
+
+async function createTelegramClient(sessionString, account) {
+  const credentials = getTelegramApiCredentials(account)
+  if (!credentials.apiId || !credentials.apiHash) {
+    throw new Error("Telegram API credentials are missing for this account")
+  }
+
+  return new TelegramClient(new StringSession(String(sessionString || "")), credentials.apiId, credentials.apiHash, {
+    connectionRetries: 5,
+  })
+}
+
+async function safelyDisconnectTelegramClient(client) {
+  if (!client) return
+  try {
+    await client.disconnect()
+  } catch (error) {
+    console.warn("Telegram disconnect failed", error)
+  }
+}
+
+function normalizeTelegramPeer(value) {
+  const raw = String(value || "").trim()
+  if (!raw) return ""
+  if (raw.startsWith("https://t.me/")) {
+    return raw.replace("https://t.me/", "@").replace(/\/+$/, "")
+  }
+  if (raw.startsWith("http://t.me/")) {
+    return raw.replace("http://t.me/", "@").replace(/\/+$/, "")
+  }
+  return raw
+}
+
 async function handleApi(req, res, url) {
   const store = readStore()
   const requester = getRequester(req, store)
 
-  if (req.method === "GET" && url.pathname === "/api/bootstrap") {
-    sendJson(res, 200, {
-      dashboard: buildDashboard(store),
-      campaigns: store.campaigns,
-      schedulerRules: store.schedulerRules,
-      accounts: store.accounts,
-      groups: store.groups,
-      templates: store.templates,
-      mediaItems: store.mediaItems,
+    if (req.method === "GET" && url.pathname === "/api/bootstrap") {
+      sendJson(res, 200, {
+        dashboard: buildDashboard(store),
+        campaigns: store.campaigns,
+        schedulerRules: store.schedulerRules,
+        accounts: store.accounts.map(sanitizeAccountForClient),
+        groups: store.groups.map(sanitizeGroupForClient),
+        templates: store.templates,
+        mediaItems: store.mediaItems,
       aiDrafts: store.aiDrafts,
       leads: store.leads,
       inboxMessages: store.inboxMessages,
@@ -560,13 +633,23 @@ async function handleApi(req, res, url) {
       platform: payload.platform || "",
       accountName: payload.accountName || "",
       accountHandle: payload.accountHandle || "",
+      phoneNumber: payload.phoneNumber || "",
+      apiId: sanitizeApiId(payload.apiId),
+      apiHash: payload.apiHash || "",
+      sessionStatus: payload.platform === "telegram" ? "not_connected" : "",
+      sessionString: "",
+      pendingSessionString: "",
+      pendingPhoneCodeHash: "",
+      pendingPhoneNumber: "",
+      telegramLastVerifiedAt: "",
+      telegramLastPostedAt: "",
       status: payload.status || "connected",
       createdAt: new Date().toISOString(),
     }
     store.accounts.unshift(record)
     addLog(store, { type: "account", status: "success", message: `Account connected: ${record.accountName || "new account"}` })
     writeStore(store)
-    sendJson(res, 201, record)
+    sendJson(res, 201, sanitizeAccountForClient(record))
     return
   }
 
@@ -577,6 +660,7 @@ async function handleApi(req, res, url) {
       name: payload.name || "",
       platform: payload.platform || "",
       inviteLink: payload.inviteLink || "",
+      telegramPeer: payload.telegramPeer || "",
       categoryTags: Array.isArray(payload.categoryTags) ? payload.categoryTags : [],
       status: payload.status || "connected",
       createdAt: new Date().toISOString(),
@@ -584,7 +668,7 @@ async function handleApi(req, res, url) {
     store.groups.unshift(record)
     addLog(store, { type: "group", status: "success", message: `Group connected: ${record.name || "new group"}` })
     writeStore(store)
-    sendJson(res, 201, record)
+    sendJson(res, 201, sanitizeGroupForClient(record))
     return
   }
 
@@ -602,6 +686,175 @@ async function handleApi(req, res, url) {
     writeStore(store)
     sendJson(res, 201, record)
     return
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/telegram/auth/start") {
+    const payload = await parseBody(req)
+    const account = store.accounts.find((item) => item.id === payload.accountId)
+
+    if (!account || account.platform !== "telegram") {
+      sendJson(res, 404, { error: "Telegram account not found" })
+      return
+    }
+
+    if (!account.phoneNumber || !account.apiId || !account.apiHash) {
+      sendJson(res, 400, { error: "Telegram account is missing phone number, API ID, or API hash" })
+      return
+    }
+
+    const client = await createTelegramClient(account.pendingSessionString || account.sessionString || "", account)
+    try {
+      await client.connect()
+      if (account.sessionString && await client.isUserAuthorized()) {
+        account.sessionStatus = "connected"
+        writeStore(store)
+        sendJson(res, 200, { ok: true, status: "connected", detail: "Telegram account is already connected." })
+        return
+      }
+
+      const sentCode = await client.sendCode(getTelegramApiCredentials(account), account.phoneNumber, false)
+      account.pendingSessionString = client.session.save()
+      account.pendingPhoneCodeHash = sentCode.phoneCodeHash
+      account.pendingPhoneNumber = account.phoneNumber
+      account.sessionStatus = "code_sent"
+      writeStore(store)
+      addLog(store, { type: "telegram", status: "success", message: `Telegram login code sent for ${account.accountName || account.phoneNumber}` })
+      writeStore(store)
+      sendJson(res, 200, {
+        ok: true,
+        status: "code_sent",
+        isCodeViaApp: Boolean(sentCode.isCodeViaApp),
+        detail: sentCode.isCodeViaApp ? "Code sent to Telegram app." : "Code sent by SMS/Telegram.",
+      })
+      return
+    } finally {
+      await safelyDisconnectTelegramClient(client)
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/telegram/auth/verify") {
+    const payload = await parseBody(req)
+    const account = store.accounts.find((item) => item.id === payload.accountId)
+
+    if (!account || account.platform !== "telegram") {
+      sendJson(res, 404, { error: "Telegram account not found" })
+      return
+    }
+
+    if (!account.pendingSessionString || !account.pendingPhoneCodeHash || !account.pendingPhoneNumber) {
+      sendJson(res, 400, { error: "Start Telegram auth first to request a login code" })
+      return
+    }
+
+    if (!payload.phoneCode) {
+      sendJson(res, 400, { error: "Telegram login code is required" })
+      return
+    }
+
+    const client = await createTelegramClient(account.pendingSessionString, account)
+    try {
+      await client.connect()
+      try {
+        await client.invoke(new Api.auth.SignIn({
+          phoneNumber: account.pendingPhoneNumber,
+          phoneCodeHash: account.pendingPhoneCodeHash,
+          phoneCode: String(payload.phoneCode).trim(),
+        }))
+      } catch (error) {
+        if (error?.errorMessage === "SESSION_PASSWORD_NEEDED") {
+          if (!payload.password) {
+            sendJson(res, 400, { error: "Two-step password is required for this Telegram account" })
+            return
+          }
+
+          await client.signInWithPassword(getTelegramApiCredentials(account), {
+            password: async () => String(payload.password).trim(),
+            onError: (err) => {
+              throw err
+            },
+          })
+        } else {
+          throw error
+        }
+      }
+
+      const profile = await client.getMe()
+      account.sessionString = client.session.save()
+      account.pendingSessionString = ""
+      account.pendingPhoneCodeHash = ""
+      account.pendingPhoneNumber = ""
+      account.sessionStatus = "connected"
+      account.telegramLastVerifiedAt = new Date().toISOString()
+      account.accountHandle = profile?.username ? `@${profile.username}` : account.accountHandle
+      if (profile?.firstName && !account.accountName) {
+        account.accountName = profile.firstName
+      }
+      addLog(store, { type: "telegram", status: "success", message: `Telegram account verified: ${account.accountName || account.phoneNumber}` })
+      writeStore(store)
+      sendJson(res, 200, { ok: true, status: "connected", account: sanitizeAccountForClient(account) })
+      return
+    } finally {
+      await safelyDisconnectTelegramClient(client)
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/telegram/post") {
+    const payload = await parseBody(req)
+    const account = store.accounts.find((item) => item.id === payload.accountId)
+
+    if (!account || account.platform !== "telegram") {
+      sendJson(res, 404, { error: "Telegram account not found" })
+      return
+    }
+
+    if (!account.sessionString) {
+      sendJson(res, 400, { error: "Telegram account is not connected yet" })
+      return
+    }
+
+    const message = String(payload.message || "").trim()
+    if (!message) {
+      sendJson(res, 400, { error: "Telegram message is required" })
+      return
+    }
+
+    const group = store.groups.find((item) => item.id === payload.groupId)
+    const targetPeer = normalizeTelegramPeer(payload.targetPeer || group?.telegramPeer || group?.inviteLink)
+    if (!targetPeer) {
+      sendJson(res, 400, { error: "Telegram target peer is required. Add a channel username, group username, or Telegram peer." })
+      return
+    }
+
+    const client = await createTelegramClient(account.sessionString, account)
+    try {
+      await client.connect()
+      if (!await client.isUserAuthorized()) {
+        account.sessionStatus = "expired"
+        writeStore(store)
+        sendJson(res, 401, { error: "Telegram session expired. Reconnect the account and try again." })
+        return
+      }
+
+      const result = await client.sendMessage(targetPeer, { message })
+      account.telegramLastPostedAt = new Date().toISOString()
+      addLog(store, {
+        type: "telegram",
+        status: "success",
+        message: `Telegram message posted to ${targetPeer}`,
+        meta: {
+          accountId: account.id,
+          campaignId: payload.campaignId || "",
+          templateId: payload.templateId || "",
+          groupId: payload.groupId || "",
+          messageId: result?.id || "",
+        },
+      })
+      writeStore(store)
+      sendJson(res, 200, { ok: true, targetPeer, messageId: result?.id || null })
+      return
+    } finally {
+      await safelyDisconnectTelegramClient(client)
+    }
   }
 
   if (req.method === "POST" && url.pathname === "/api/media") {
