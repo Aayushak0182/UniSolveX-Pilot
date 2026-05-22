@@ -1140,11 +1140,11 @@ function hydrateLocalCache() {
   const cached = readLocalCache()
   if (!cached) return
 
-  state.campaigns = mergeRecords(cached.campaigns || [], state.campaigns)
-  state.accounts = mergeRecords(cached.accounts || [], state.accounts)
-  state.groups = mergeRecords(cached.groups || [], state.groups)
-  state.templates = mergeRecords(cached.templates || [], state.templates)
-  state.telegramDispatches = mergeRecords(cached.telegramDispatches || [], state.telegramDispatches)
+  state.campaigns = mergeRecords(state.campaigns, cached.campaigns || [])
+  state.accounts = mergeRecords(state.accounts, cached.accounts || [])
+  state.groups = mergeRecords(state.groups, cached.groups || [])
+  state.templates = mergeRecords(state.templates, cached.templates || [])
+  state.telegramDispatches = mergeRecords(state.telegramDispatches, cached.telegramDispatches || [])
 }
 
 function persistLocalCache() {
