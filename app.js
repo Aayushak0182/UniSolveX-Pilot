@@ -1074,7 +1074,9 @@ async function syncManagedRecord(collection, payload) {
       updatedAt: new Date().toISOString(),
     }, { merge: true })
   } catch (error) {
-    toast(`Cloud sync failed: ${error.message}`, true)
+    if (!isIgnorableFirestorePermissionError(error)) {
+      toast(`Cloud sync failed: ${error.message}`, true)
+    }
   }
 
   persistLocalCache()
@@ -1120,7 +1122,9 @@ async function hydratePersistentData() {
     state.templates = mergeRecords(templates, state.templates)
     state.telegramDispatches = sortByCreatedDesc(telegramDispatches)
   } catch (error) {
-    toast(`Cloud restore failed: ${error.message}`, true)
+    if (!isIgnorableFirestorePermissionError(error)) {
+      toast(`Cloud restore failed: ${error.message}`, true)
+    }
   }
 }
 
