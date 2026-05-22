@@ -1094,7 +1094,9 @@ async function removeManagedRecord(collection, id) {
   try {
     await firebaseContext.firestore.collection(collection).doc(id).delete()
   } catch (error) {
-    toast(`Cloud delete failed: ${error.message}`, true)
+    if (!isIgnorableFirestorePermissionError(error)) {
+      throw error
+    }
   }
 
   persistLocalCache()
@@ -1254,9 +1256,18 @@ async function deleteItem(collection, id) {
       apiError = error
     }
 
+    removeItemFromState(collection, id)
+    persistLocalCache()
+
     const syncedCollection = DELETE_SYNC_COLLECTIONS[collection]
     if (syncedCollection) {
-      await removeManagedRecord(syncedCollection, id)
+      try {
+        await removeManagedRecord(syncedCollection, id)
+      } catch (error) {
+        if (!isIgnorableFirestorePermissionError(error)) {
+          throw error
+        }
+      }
     }
 
     if (apiError && (!syncedCollection || !/item not found/i.test(apiError.message))) {
@@ -1363,6 +1374,32 @@ function sortByCreatedDesc(items = []) {
 function truncateText(value, maxLength) {
   const text = String(value || "").trim()
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text
+}
+
+function removeItemFromState(collection, id) {
+  const stateKeyMap = {
+    campaigns: "campaigns",
+    "scheduler-rules": "schedulerRules",
+    accounts: "accounts",
+    groups: "groups",
+    templates: "templates",
+    media: "mediaItems",
+    "ai-drafts": "aiDrafts",
+    leads: "leads",
+    inbox: "inboxMessages",
+    team: "teamMembers",
+    support: "supportTickets",
+    logs: "logs",
+  }
+
+  const key = stateKeyMap[collection]
+  if (!key || !Array.isArray(state[key])) return
+  state[key] = state[key].filter((item) => item.id !== id)
+}
+
+function isIgnorableFirestorePermissionError(error) {
+  const message = String(error?.message || "").toLowerCase()
+  return message.includes("insufficient permissions") || message.includes("missing or insufficient permissions")
 }
 
 function escapeHtml(value) {
