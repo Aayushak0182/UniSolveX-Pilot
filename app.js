@@ -273,8 +273,37 @@ async function handleGroupSubmit(event) {
   const form = event.currentTarget
   const data = new FormData(form)
   await runSave(async () => {
-    let inviteLink = textValue(data, "inviteLink")
     const inviteFile = data.get("inviteFile")
+    const platform = data.get("platform")
+    const categoryTags = splitTags(data.get("categoryTags"))
+
+    if (inviteFile && inviteFile.size && isCsvFile(inviteFile)) {
+      const importedGroups = await parseGroupCsvFile(inviteFile, {
+        platform,
+        fallbackName: textValue(data, "name"),
+        fallbackPeer: textValue(data, "telegramPeer"),
+        fallbackLink: textValue(data, "inviteLink"),
+        categoryTags,
+      })
+
+      if (!importedGroups.length) {
+        throw new Error("CSV me koi valid group/channel row nahi mila")
+      }
+
+      for (const item of importedGroups) {
+        const record = await api("/api/groups", {
+          method: "POST",
+          body: item,
+        })
+        await syncManagedRecord(FIRESTORE_COLLECTIONS.groups, record)
+      }
+
+      form.reset()
+      toast(`${importedGroups.length} channels imported from CSV`)
+      return
+    }
+
+    let inviteLink = textValue(data, "inviteLink")
     if (!inviteLink && inviteFile && inviteFile.size) {
       inviteLink = await uploadToCloudinary(inviteFile)
     }
@@ -282,10 +311,10 @@ async function handleGroupSubmit(event) {
       method: "POST",
       body: {
         name: textValue(data, "name"),
-        platform: data.get("platform"),
+        platform,
         telegramPeer: textValue(data, "telegramPeer"),
         inviteLink,
-        categoryTags: splitTags(data.get("categoryTags")),
+        categoryTags,
       },
     })
     await syncManagedRecord(FIRESTORE_COLLECTIONS.groups, record)
@@ -976,6 +1005,137 @@ function buildPlatformStats() {
 
 function splitTags(value) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean)
+}
+
+function isCsvFile(file) {
+  const name = String(file?.name || "").toLowerCase()
+  return name.endsWith(".csv") || file?.type === "text/csv"
+}
+
+async function parseGroupCsvFile(file, options) {
+  const text = await file.text()
+  const rows = parseCsvText(text)
+  if (!rows.length) return []
+
+  const maybeHeader = rows[0].map(normalizeColumnName)
+  const hasHeader = maybeHeader.some((value) => ["name", "groupname", "channelname", "link", "invitelink", "telegrampeer", "username", "platform", "tags", "categorytags"].includes(value))
+  const dataRows = hasHeader ? rows.slice(1) : rows
+  const headers = hasHeader ? maybeHeader : []
+
+  return dataRows
+    .map((row) => mapCsvRowToGroup(row, headers, options))
+    .filter(Boolean)
+}
+
+function parseCsvText(text) {
+  const rows = []
+  let current = ""
+  let row = []
+  let inQuotes = false
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i]
+    const next = text[i + 1]
+
+    if (char === '"') {
+      if (inQuotes && next === '"') {
+        current += '"'
+        i += 1
+      } else {
+        inQuotes = !inQuotes
+      }
+      continue
+    }
+
+    if (char === "," && !inQuotes) {
+      row.push(current.trim())
+      current = ""
+      continue
+    }
+
+    if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && next === "\n") i += 1
+      row.push(current.trim())
+      current = ""
+      if (row.some((cell) => cell !== "")) {
+        rows.push(row)
+      }
+      row = []
+      continue
+    }
+
+    current += char
+  }
+
+  row.push(current.trim())
+  if (row.some((cell) => cell !== "")) {
+    rows.push(row)
+  }
+
+  return rows
+}
+
+function mapCsvRowToGroup(row, headers, options) {
+  const getValue = (...keys) => {
+    for (const key of keys) {
+      const index = headers.indexOf(normalizeColumnName(key))
+      if (index >= 0 && row[index]) return String(row[index]).trim()
+    }
+    return ""
+  }
+
+  const genericFirst = String(row[0] || "").trim()
+  const genericSecond = String(row[1] || "").trim()
+  const genericThird = String(row[2] || "").trim()
+  const platform = getValue("platform") || options.platform || "telegram"
+  const inviteLink = getValue("invite_link", "link", "group_link", "channel_link", "url") || options.fallbackLink || ""
+  const telegramPeer = normalizeTelegramPeerInput(getValue("telegram_peer", "peer", "username", "handle") || options.fallbackPeer || inferPeerFromRow(genericFirst, genericSecond, genericThird, inviteLink))
+  const name = getValue("name", "group_name", "channel_name", "title") || inferNameFromRow(genericFirst, genericSecond, telegramPeer, inviteLink, options.fallbackName)
+  const tagText = getValue("tags", "category_tags")
+  const categoryTags = [...new Set([...(options.categoryTags || []), ...splitTags(tagText)])]
+
+  if (!name && !telegramPeer && !inviteLink) return null
+
+  return {
+    name: name || telegramPeer || inviteLink || "Imported Telegram channel",
+    platform,
+    telegramPeer,
+    inviteLink,
+    categoryTags,
+  }
+}
+
+function inferPeerFromRow(first, second, third, inviteLink) {
+  for (const value of [first, second, third, inviteLink]) {
+    const text = String(value || "").trim()
+    if (!text) continue
+    if (text.startsWith("@") || text.includes("t.me/")) return text
+  }
+  return ""
+}
+
+function inferNameFromRow(first, second, telegramPeer, inviteLink, fallbackName) {
+  const firstValue = String(first || "").trim()
+  const secondValue = String(second || "").trim()
+
+  if (firstValue && !firstValue.startsWith("@") && !firstValue.includes("t.me/")) return firstValue
+  if (secondValue && !secondValue.startsWith("@") && !secondValue.includes("t.me/")) return secondValue
+  if (telegramPeer) return telegramPeer.replace(/^@/, "")
+  if (inviteLink) return inviteLink.replace(/^https?:\/\//i, "")
+  return fallbackName || ""
+}
+
+function normalizeColumnName(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "")
+}
+
+function normalizeTelegramPeerInput(value) {
+  const raw = String(value || "").trim()
+  if (!raw) return ""
+  if (/^https?:\/\/t\.me\//i.test(raw)) {
+    return `@${raw.replace(/^https?:\/\/t\.me\//i, "").replace(/\/+$/, "")}`
+  }
+  return raw
 }
 
 function textValue(formData, key) {
