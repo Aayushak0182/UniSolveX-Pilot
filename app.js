@@ -466,6 +466,7 @@ async function handleTelegramShareSubmit(event) {
 
   await runSave(async () => {
     const createdDispatches = []
+    const failures = []
 
     for (const target of validTargets) {
       const dispatch = {
@@ -484,34 +485,48 @@ async function handleTelegramShareSubmit(event) {
         createdAt: new Date().toISOString(),
       }
 
-      const response = await api("/api/telegram/post", {
-        method: "POST",
-        body: {
-          accountId,
-          accountPhoneNumber: account.phoneNumber || "",
-          accountName: account.accountName || "",
-          sessionString: account.sessionString || "",
-          apiId: account.apiId || "",
-          apiHash: account.apiHash || "",
-          groupId: target.group?.id || "",
-          targetPeer: dispatch.targetPeer,
-          campaignId: dispatch.campaignId,
-          templateId: dispatch.templateId,
-          message,
-        },
-      })
+      try {
+        const response = await api("/api/telegram/post", {
+          method: "POST",
+          body: {
+            accountId,
+            accountPhoneNumber: account.phoneNumber || "",
+            accountName: account.accountName || "",
+            sessionString: account.sessionString || "",
+            apiId: account.apiId || "",
+            apiHash: account.apiHash || "",
+            groupId: target.group?.id || "",
+            targetPeer: dispatch.targetPeer,
+            campaignId: dispatch.campaignId,
+            templateId: dispatch.templateId,
+            message,
+          },
+        })
 
-      dispatch.messageId = response.messageId || ""
-      dispatch.targetPeer = response.targetPeer || dispatch.targetPeer
-      createdDispatches.push(dispatch)
-      await syncManagedRecord(FIRESTORE_COLLECTIONS.telegramDispatches, dispatch)
+        dispatch.messageId = response.messageId || ""
+        dispatch.targetPeer = response.targetPeer || dispatch.targetPeer
+        createdDispatches.push(dispatch)
+        await syncManagedRecord(FIRESTORE_COLLECTIONS.telegramDispatches, dispatch)
+      } catch (error) {
+        failures.push({
+          targetPeer: dispatch.targetPeer || target.group?.name || "unknown target",
+          message: error.message || "Send failed",
+        })
+      }
+    }
+
+    if (!createdDispatches.length && failures.length) {
+      throw new Error(failures[0].message)
     }
 
     state.telegramDispatches = mergeRecords(createdDispatches, state.telegramDispatches)
     persistLocalCache()
     form.reset()
     state.ui.selectedTelegramGroupIds = []
-  }, validTargets.length > 1 ? `${validTargets.length} Telegram messages posted` : "Telegram message posted")
+    if (failures.length) {
+      toast(`${createdDispatches.length} sent, ${failures.length} failed. ${failures[0].message}`, true)
+    }
+  }, validTargets.length > 1 ? `${validTargets.length} Telegram targets processed` : "Telegram message posted")
 }
 
 async function handleMediaSubmit(event) {

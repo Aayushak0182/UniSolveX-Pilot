@@ -533,6 +533,41 @@ function normalizePhoneNumber(value) {
   return String(value || "").replace(/[^\d+]/g, "")
 }
 
+function describeTelegramSendError(error, targetPeer) {
+  const code = Number(error?.code || 0)
+  const message = String(error?.errorMessage || error?.message || "").trim()
+
+  if (message.includes("CHAT_WRITE_FORBIDDEN")) {
+    return {
+      statusCode: 403,
+      error: `Aapke Telegram account ko ${targetPeer} me post permission nahi hai. Admin rights dijiye ya dusra group select kijiye.`,
+      telegramCode: "CHAT_WRITE_FORBIDDEN",
+    }
+  }
+
+  if (message.includes("CHANNEL_PRIVATE")) {
+    return {
+      statusCode: 403,
+      error: `${targetPeer} private ya inaccessible hai. Invite/link/username verify kijiye.`,
+      telegramCode: "CHANNEL_PRIVATE",
+    }
+  }
+
+  if (message.includes("USERNAME_INVALID") || message.includes("PEER_ID_INVALID")) {
+    return {
+      statusCode: 400,
+      error: `${targetPeer} valid Telegram target nahi hai. Username ya peer dobara check kijiye.`,
+      telegramCode: "INVALID_TARGET",
+    }
+  }
+
+  return {
+    statusCode: code >= 400 && code < 600 ? code : 500,
+    error: message || `Telegram send failed for ${targetPeer}`,
+    telegramCode: "SEND_FAILED",
+  }
+}
+
 function sanitizeTelegramSecretPayload(payload = {}) {
   return {
     phoneNumber: normalizePhoneNumber(payload.phoneNumber || payload.accountPhoneNumber || ""),
@@ -693,25 +728,36 @@ async function processDueSchedulerRules(store) {
         const target = targets[index]
         const targetPeer = normalizeTelegramPeer(target.telegramPeer || target.inviteLink)
         if (!targetPeer) continue
-        await client.sendMessage(targetPeer, { message })
-        processedCount += 1
+        try {
+          await client.sendMessage(targetPeer, { message })
+          processedCount += 1
 
-        store.telegramDispatches = store.telegramDispatches || []
-        store.telegramDispatches.unshift({
-          id: generateId("tg"),
-          accountId: account.id,
-          accountName: account.accountName || "",
-          campaignId: rule.campaignId || "",
-          campaignName: store.campaigns.find((item) => item.id === rule.campaignId)?.name || "",
-          templateId: rule.templateId || "",
-          templateTitle: store.templates.find((item) => item.id === rule.templateId)?.title || "",
-          groupId: target.id,
-          groupName: target.name || "",
-          message,
-          targetPeer,
-          status: "sent",
-          createdAt: new Date().toISOString(),
-        })
+          store.telegramDispatches = store.telegramDispatches || []
+          store.telegramDispatches.unshift({
+            id: generateId("tg"),
+            accountId: account.id,
+            accountName: account.accountName || "",
+            campaignId: rule.campaignId || "",
+            campaignName: store.campaigns.find((item) => item.id === rule.campaignId)?.name || "",
+            templateId: rule.templateId || "",
+            templateTitle: store.templates.find((item) => item.id === rule.templateId)?.title || "",
+            groupId: target.id,
+            groupName: target.name || "",
+            message,
+            targetPeer,
+            status: "sent",
+            createdAt: new Date().toISOString(),
+          })
+        } catch (error) {
+          const failure = describeTelegramSendError(error, targetPeer)
+          addLog(store, {
+            type: "telegram",
+            status: "error",
+            message: `Scheduled post failed for ${targetPeer}`,
+            meta: { ruleId: rule.id, targetPeer, telegramCode: failure.telegramCode, detail: failure.error },
+          })
+          continue
+        }
 
         const waitMs = Math.max(Number(rule.dispatchIntervalSeconds) || 20, 5) * 1000
         if (index < targets.length - 1) {
@@ -1162,7 +1208,21 @@ async function handleApi(req, res, url) {
         return
       }
 
-      const result = await client.sendMessage(targetPeer, { message })
+      let result
+      try {
+        result = await client.sendMessage(targetPeer, { message })
+      } catch (error) {
+        const failure = describeTelegramSendError(error, targetPeer)
+        addLog(store, {
+          type: "telegram",
+          status: "error",
+          message: `Telegram message failed for ${targetPeer}`,
+          meta: { accountId: account.id, groupId: payload.groupId || "", telegramCode: failure.telegramCode, detail: failure.error },
+        })
+        writeStore(store)
+        sendJson(res, failure.statusCode, { error: failure.error, telegramCode: failure.telegramCode })
+        return
+      }
       account.telegramLastPostedAt = new Date().toISOString()
       addLog(store, {
         type: "telegram",
