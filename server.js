@@ -4,6 +4,7 @@ const path = require("path")
 const { URL } = require("url")
 const { TelegramClient, Api } = require("telegram")
 const { StringSession } = require("telegram/sessions")
+const WEEK_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 loadEnvFile(path.join(__dirname, ".env"))
 
@@ -123,6 +124,7 @@ function createDefaultStore() {
     schedulerRules: [],
     accounts: [],
     groups: [],
+    telegramDispatches: [],
     templates: [],
     mediaItems: [],
     aiDrafts: [],
@@ -209,6 +211,7 @@ function readStore() {
     schedulerRules: Array.isArray(parsed.schedulerRules) ? parsed.schedulerRules : [],
     accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [],
     groups: Array.isArray(parsed.groups) ? parsed.groups : [],
+    telegramDispatches: Array.isArray(parsed.telegramDispatches) ? parsed.telegramDispatches : [],
     templates: Array.isArray(parsed.templates) ? parsed.templates : [],
     mediaItems: Array.isArray(parsed.mediaItems) ? parsed.mediaItems : [],
     aiDrafts: Array.isArray(parsed.aiDrafts) ? parsed.aiDrafts : [],
@@ -530,6 +533,206 @@ function normalizePhoneNumber(value) {
   return String(value || "").replace(/[^\d+]/g, "")
 }
 
+function sanitizeTelegramSecretPayload(payload = {}) {
+  return {
+    phoneNumber: normalizePhoneNumber(payload.phoneNumber || payload.accountPhoneNumber || ""),
+    apiId: sanitizeApiId(payload.apiId),
+    apiHash: String(payload.apiHash || "").trim(),
+    sessionString: String(payload.sessionString || "").trim(),
+    pendingSessionString: String(payload.pendingSessionString || "").trim(),
+    pendingPhoneCodeHash: String(payload.pendingPhoneCodeHash || "").trim(),
+    pendingPhoneNumber: normalizePhoneNumber(payload.pendingPhoneNumber || ""),
+    sessionStatus: String(payload.sessionStatus || "").trim(),
+    telegramLastVerifiedAt: String(payload.telegramLastVerifiedAt || "").trim(),
+    telegramLastPostedAt: String(payload.telegramLastPostedAt || "").trim(),
+  }
+}
+
+function buildTelegramState(account = {}) {
+  return {
+    phoneNumber: account.phoneNumber || "",
+    apiId: sanitizeApiId(account.apiId),
+    apiHash: account.apiHash || "",
+    sessionString: account.sessionString || "",
+    pendingSessionString: account.pendingSessionString || "",
+    pendingPhoneCodeHash: account.pendingPhoneCodeHash || "",
+    pendingPhoneNumber: account.pendingPhoneNumber || "",
+    sessionStatus: account.sessionStatus || "",
+    telegramLastVerifiedAt: account.telegramLastVerifiedAt || "",
+    telegramLastPostedAt: account.telegramLastPostedAt || "",
+  }
+}
+
+function mergeTelegramAccountData(target = {}, payload = {}) {
+  const secure = sanitizeTelegramSecretPayload(payload)
+  return {
+    ...target,
+    phoneNumber: secure.phoneNumber || target.phoneNumber || "",
+    apiId: secure.apiId || target.apiId || "",
+    apiHash: secure.apiHash || target.apiHash || "",
+    sessionString: secure.sessionString || target.sessionString || "",
+    pendingSessionString: secure.pendingSessionString || target.pendingSessionString || "",
+    pendingPhoneCodeHash: secure.pendingPhoneCodeHash || target.pendingPhoneCodeHash || "",
+    pendingPhoneNumber: secure.pendingPhoneNumber || target.pendingPhoneNumber || "",
+    sessionStatus: secure.sessionStatus || target.sessionStatus || "",
+    telegramLastVerifiedAt: secure.telegramLastVerifiedAt || target.telegramLastVerifiedAt || "",
+    telegramLastPostedAt: secure.telegramLastPostedAt || target.telegramLastPostedAt || "",
+  }
+}
+
+function resolveOrHydrateTelegramAccount(store, payload = {}) {
+  const existing = resolveTelegramAccount(store, payload)
+  if (existing) {
+    Object.assign(existing, mergeTelegramAccountData(existing, payload))
+    return existing
+  }
+
+  const secure = sanitizeTelegramSecretPayload(payload)
+  const requestedId = String(payload.accountId || "").trim()
+  if (!requestedId || !secure.apiId || !secure.apiHash) return null
+
+  const restored = {
+    id: requestedId,
+    platform: "telegram",
+    accountName: String(payload.accountName || "Telegram").trim(),
+    accountHandle: String(payload.accountHandle || "").trim(),
+    status: String(payload.status || "connected").trim() || "connected",
+    createdAt: new Date().toISOString(),
+    ...secure,
+  }
+  store.accounts.unshift(restored)
+  return restored
+}
+
+function createSchedulerMessage(store, rule) {
+  const campaign = store.campaigns.find((item) => item.id === rule.campaignId)
+  const template = store.templates.find((item) => item.id === rule.templateId)
+  const parts = []
+  if (template?.title) parts.push(template.title)
+  if (template?.body) parts.push(template.body)
+  if (campaign?.name) parts.push(campaign.name)
+  if (campaign?.description) parts.push(campaign.description)
+  if (campaign?.caption) parts.push(campaign.caption)
+  if (campaign?.cta) parts.push(`CTA: ${campaign.cta}`)
+  return parts.filter(Boolean).join("\n\n").trim()
+}
+
+function getSchedulerTargets(store, rule) {
+  const telegramGroups = store.groups.filter((item) => item.platform === "telegram" && (item.telegramPeer || item.inviteLink))
+  if (!telegramGroups.length) return []
+
+  const batchSize = Math.min(Math.max(Number(rule.batchSize) || 35, 1), 40)
+  const cursor = Math.max(Number(rule.lastGroupCursor) || 0, 0)
+  const items = []
+  for (let index = 0; index < Math.min(batchSize, telegramGroups.length); index += 1) {
+    items.push(telegramGroups[(cursor + index) % telegramGroups.length])
+  }
+  return items
+}
+
+function isRuleDue(rule, now = new Date()) {
+  if (!rule || !["queued", "running"].includes(rule.status)) return false
+  const nextRunAt = rule.nextRunAt ? new Date(rule.nextRunAt) : null
+  if (nextRunAt && nextRunAt.getTime() > now.getTime()) return false
+
+  if (rule.mode === "interval") {
+    return true
+  }
+
+  const today = WEEK_DAYS[now.getDay() === 0 ? 6 : now.getDay() - 1]
+  if (Array.isArray(rule.days) && rule.days.length && !rule.days.includes(today)) return false
+
+  if (rule.dailyTime) {
+    const [hours, minutes] = String(rule.dailyTime).split(":").map((value) => Number(value) || 0)
+    const scheduledAt = new Date(now)
+    scheduledAt.setHours(hours, minutes, 0, 0)
+    const lastRunAt = rule.lastRunAt ? new Date(rule.lastRunAt) : null
+    return scheduledAt.getTime() <= now.getTime() && (!lastRunAt || lastRunAt.getTime() < scheduledAt.getTime())
+  }
+
+  return true
+}
+
+function calculateNextRunAt(rule, now = new Date()) {
+  if (rule.mode === "interval") {
+    const intervalMinutes = Math.max(Number(rule.intervalMinutes) || 1, 1)
+    return new Date(now.getTime() + (intervalMinutes * 60000)).toISOString()
+  }
+
+  const next = new Date(now)
+  next.setDate(next.getDate() + 1)
+  if (rule.dailyTime) {
+    const [hours, minutes] = String(rule.dailyTime).split(":").map((value) => Number(value) || 0)
+    next.setHours(hours, minutes, 0, 0)
+  }
+  return next.toISOString()
+}
+
+async function processDueSchedulerRules(store) {
+  const now = new Date()
+  let processedCount = 0
+
+  for (const rule of store.schedulerRules) {
+    if (!isRuleDue(rule, now)) continue
+
+    const account = resolveTelegramAccount(store, { accountId: rule.accountId }) || store.accounts.find((item) => item.platform === "telegram" && item.sessionString)
+    const message = createSchedulerMessage(store, rule)
+    const targets = getSchedulerTargets(store, rule)
+
+    if (!account || !account.sessionString || !message || !targets.length) continue
+
+    const client = await createTelegramClient(account.sessionString, account)
+    try {
+      await client.connect()
+      if (!await client.isUserAuthorized()) {
+        account.sessionStatus = "expired"
+        continue
+      }
+
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index]
+        const targetPeer = normalizeTelegramPeer(target.telegramPeer || target.inviteLink)
+        if (!targetPeer) continue
+        await client.sendMessage(targetPeer, { message })
+        processedCount += 1
+
+        store.telegramDispatches = store.telegramDispatches || []
+        store.telegramDispatches.unshift({
+          id: generateId("tg"),
+          accountId: account.id,
+          accountName: account.accountName || "",
+          campaignId: rule.campaignId || "",
+          campaignName: store.campaigns.find((item) => item.id === rule.campaignId)?.name || "",
+          templateId: rule.templateId || "",
+          templateTitle: store.templates.find((item) => item.id === rule.templateId)?.title || "",
+          groupId: target.id,
+          groupName: target.name || "",
+          message,
+          targetPeer,
+          status: "sent",
+          createdAt: new Date().toISOString(),
+        })
+
+        const waitMs = Math.max(Number(rule.dispatchIntervalSeconds) || 20, 5) * 1000
+        if (index < targets.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, waitMs))
+        }
+      }
+
+      rule.lastRunAt = new Date().toISOString()
+      rule.nextRunAt = calculateNextRunAt(rule, new Date())
+      rule.lastGroupCursor = ((Number(rule.lastGroupCursor) || 0) + targets.length) % Math.max(store.groups.filter((item) => item.platform === "telegram").length, 1)
+      rule.status = "running"
+      account.telegramLastPostedAt = new Date().toISOString()
+      addLog(store, { type: "scheduler", status: "success", message: `Scheduled batch posted for ${rule.name || "Unnamed rule"}`, meta: { ruleId: rule.id, count: targets.length } })
+    } finally {
+      await safelyDisconnectTelegramClient(client)
+    }
+  }
+
+  return processedCount
+}
+
 async function handleApi(req, res, url) {
   const store = readStore()
   const requester = getRequester(req, store)
@@ -541,26 +744,27 @@ async function handleApi(req, res, url) {
         schedulerRules: store.schedulerRules,
         accounts: store.accounts.map(sanitizeAccountForClient),
         groups: store.groups.map(sanitizeGroupForClient),
+        telegramDispatches: store.telegramDispatches || [],
         templates: store.templates,
         mediaItems: store.mediaItems,
-      aiDrafts: store.aiDrafts,
-      leads: store.leads,
-      inboxMessages: store.inboxMessages,
-      teamMembers: store.teamMembers,
-      supportTickets: store.supportTickets,
-      logs: store.logs,
-      settings: store.settings,
-      session: {
-        email: requester.email,
-        role: requester.role,
-        isAdmin: requester.isAdmin,
-      },
-      integrations: {
-        aiProvider: GEMINI_API_KEY ? "gemini" : "local",
-      },
-    })
-    return
-  }
+        aiDrafts: store.aiDrafts,
+        leads: store.leads,
+        inboxMessages: store.inboxMessages,
+        teamMembers: store.teamMembers,
+        supportTickets: store.supportTickets,
+        logs: store.logs,
+        settings: store.settings,
+        session: {
+          email: requester.email,
+          role: requester.role,
+          isAdmin: requester.isAdmin,
+        },
+        integrations: {
+          aiProvider: GEMINI_API_KEY ? "gemini" : "local",
+        },
+      })
+      return
+    }
 
   if (req.method === "GET" && url.pathname === "/api/health") {
     sendJson(res, 200, { ok: true })
@@ -630,14 +834,21 @@ async function handleApi(req, res, url) {
       id: generateId("rule"),
       name: payload.name || "",
       campaignId: payload.campaignId || "",
+      accountId: payload.accountId || "",
+      templateId: payload.templateId || "",
       mode: payload.mode || "interval",
       intervalMinutes: payload.intervalMinutes || "",
       dailyTime: payload.dailyTime || "",
       weeklyDay: payload.weeklyDay || "",
+      batchSize: Math.min(Math.max(Number(payload.batchSize) || 35, 1), 40),
+      dispatchIntervalSeconds: Math.max(Number(payload.dispatchIntervalSeconds) || 20, 5),
       days: normalizedDays,
       allDays,
       randomDelaySeconds: payload.randomDelaySeconds || "",
       status: payload.status || "queued",
+      lastRunAt: "",
+      nextRunAt: "",
+      lastGroupCursor: 0,
       createdBy: requester.email || "",
       createdAt: new Date().toISOString(),
     }
@@ -645,6 +856,13 @@ async function handleApi(req, res, url) {
     addLog(store, { type: "scheduler", status: "success", message: `Scheduler rule saved: ${record.name || "Unnamed rule"}` })
     writeStore(store)
     sendJson(res, 201, record)
+    return
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/scheduler/run-due") {
+    const processedCount = await processDueSchedulerRules(store)
+    writeStore(store)
+    sendJson(res, 200, { ok: true, processedCount })
     return
   }
 
@@ -672,6 +890,68 @@ async function handleApi(req, res, url) {
     addLog(store, { type: "account", status: "success", message: `Account connected: ${record.accountName || "new account"}` })
     writeStore(store)
     sendJson(res, 201, sanitizeAccountForClient(record))
+    return
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/accounts/restore") {
+    const payload = await parseBody(req)
+    const accounts = Array.isArray(payload.accounts) ? payload.accounts : []
+
+    for (const item of accounts) {
+      const id = String(item.id || "").trim()
+      if (!id) continue
+
+      let record = store.accounts.find((entry) => entry.id === id)
+      if (!record) {
+        record = {
+          id,
+          platform: item.platform || "telegram",
+          accountName: item.accountName || "Telegram",
+          accountHandle: item.accountHandle || "",
+          status: item.status || "connected",
+          createdAt: new Date().toISOString(),
+        }
+        store.accounts.unshift(record)
+      }
+
+      Object.assign(record, mergeTelegramAccountData(record, item), {
+        platform: "telegram",
+        accountName: item.accountName || record.accountName || "Telegram",
+        accountHandle: item.accountHandle || record.accountHandle || "",
+        status: item.status || record.status || "connected",
+      })
+    }
+
+    writeStore(store)
+    sendJson(res, 200, { ok: true, restoredCount: accounts.length })
+    return
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/workspace/restore") {
+    const payload = await parseBody(req)
+
+    const mergeCollection = (key, items) => {
+      const list = Array.isArray(items) ? items : []
+      for (const item of list) {
+        const id = String(item?.id || "").trim()
+        if (!id) continue
+        const existing = store[key].find((entry) => entry.id === id)
+        if (existing) {
+          Object.assign(existing, item)
+        } else {
+          store[key].unshift(item)
+        }
+      }
+    }
+
+    mergeCollection("campaigns", payload.campaigns)
+    mergeCollection("schedulerRules", payload.schedulerRules)
+    mergeCollection("groups", payload.groups)
+    mergeCollection("templates", payload.templates)
+    mergeCollection("accounts", payload.accounts)
+
+    writeStore(store)
+    sendJson(res, 200, { ok: true })
     return
   }
 
@@ -736,7 +1016,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/telegram/auth/start") {
     const payload = await parseBody(req)
-    const account = store.accounts.find((item) => item.id === payload.accountId)
+    const account = resolveOrHydrateTelegramAccount(store, payload)
 
     if (!account || account.platform !== "telegram") {
       sendJson(res, 404, { error: "Telegram account not found. Select the account again, or resave/reconnect it if the server was restarted." })
@@ -754,7 +1034,7 @@ async function handleApi(req, res, url) {
       if (account.sessionString && await client.isUserAuthorized()) {
         account.sessionStatus = "connected"
         writeStore(store)
-        sendJson(res, 200, { ok: true, status: "connected", detail: "Telegram account is already connected." })
+        sendJson(res, 200, { ok: true, status: "connected", detail: "Telegram account is already connected.", telegramState: buildTelegramState(account) })
         return
       }
 
@@ -771,6 +1051,7 @@ async function handleApi(req, res, url) {
         status: "code_sent",
         isCodeViaApp: Boolean(sentCode.isCodeViaApp),
         detail: sentCode.isCodeViaApp ? "Code sent to Telegram app." : "Code sent by SMS/Telegram.",
+        telegramState: buildTelegramState(account),
       })
       return
     } finally {
@@ -780,7 +1061,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/telegram/auth/verify") {
     const payload = await parseBody(req)
-    const account = store.accounts.find((item) => item.id === payload.accountId)
+    const account = resolveOrHydrateTelegramAccount(store, payload)
 
     if (!account || account.platform !== "telegram") {
       sendJson(res, 404, { error: "Telegram account not found. Select the account again, or resave/reconnect it if the server was restarted." })
@@ -837,7 +1118,7 @@ async function handleApi(req, res, url) {
       }
       addLog(store, { type: "telegram", status: "success", message: `Telegram account verified: ${account.accountName || account.phoneNumber}` })
       writeStore(store)
-      sendJson(res, 200, { ok: true, status: "connected", account: sanitizeAccountForClient(account) })
+      sendJson(res, 200, { ok: true, status: "connected", account: sanitizeAccountForClient(account), telegramState: buildTelegramState(account) })
       return
     } finally {
       await safelyDisconnectTelegramClient(client)
@@ -846,7 +1127,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/telegram/post") {
     const payload = await parseBody(req)
-    const account = resolveTelegramAccount(store, payload)
+    const account = resolveOrHydrateTelegramAccount(store, payload)
 
     if (!account || account.platform !== "telegram") {
       sendJson(res, 404, { error: "Telegram account not found. Select the account again, or resave/reconnect it if the server was restarted." })

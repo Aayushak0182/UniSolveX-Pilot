@@ -459,6 +459,39 @@ body.auth-locked .app-shell {
   margin: 0;
 }
 
+.picker-dropdown {
+  margin-bottom: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(17, 76, 95, 0.08);
+  overflow: hidden;
+}
+
+.picker-summary {
+  list-style: none;
+  padding: 14px 16px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.picker-summary::-webkit-details-marker {
+  display: none;
+}
+
+.picker-menu {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.picker-actions,
+.action-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

@@ -62,6 +62,7 @@ const appConfig = window.__APP_CONFIG__ || {}
 const apiBaseUrl = String(appConfig.apiBaseUrl || "").trim().replace(/\/+$/, "")
 const FIRESTORE_COLLECTIONS = {
   campaigns: "crm_campaigns",
+  schedulerRules: "crm_scheduler_rules",
   accounts: "crm_accounts",
   groups: "crm_groups",
   templates: "crm_templates",
@@ -69,15 +70,19 @@ const FIRESTORE_COLLECTIONS = {
 }
 const DELETE_SYNC_COLLECTIONS = {
   campaigns: FIRESTORE_COLLECTIONS.campaigns,
+  "scheduler-rules": FIRESTORE_COLLECTIONS.schedulerRules,
   accounts: FIRESTORE_COLLECTIONS.accounts,
   groups: FIRESTORE_COLLECTIONS.groups,
   templates: FIRESTORE_COLLECTIONS.templates,
 }
 
+const AUTOMATION_LOOP_MS = 60000
+
 document.addEventListener("DOMContentLoaded", async () => {
   bindNavigation()
   bindForms()
   bindAuthUi()
+  startAutomationLoop()
 
   try {
     await refreshWorkspace()
@@ -232,20 +237,25 @@ async function handleSchedulerSubmit(event) {
   const data = new FormData(form)
   const days = data.getAll("days")
   await runSave(async () => {
-    await api("/api/scheduler-rules", {
+    const record = await api("/api/scheduler-rules", {
       method: "POST",
       body: {
         name: textValue(data, "name"),
         campaignId: data.get("campaignId"),
+        accountId: data.get("accountId"),
+        templateId: data.get("templateId"),
         mode: data.get("mode"),
         intervalMinutes: data.get("intervalMinutes"),
         dailyTime: data.get("dailyTime"),
+        batchSize: data.get("batchSize"),
+        dispatchIntervalSeconds: data.get("dispatchIntervalSeconds"),
         days,
         allDays: days.includes("all_days"),
         randomDelaySeconds: data.get("randomDelaySeconds"),
         status: data.get("status"),
       },
     })
+    await syncManagedRecord(FIRESTORE_COLLECTIONS.schedulerRules, record)
     form.reset()
   }, "Scheduler rule saved")
 }
@@ -267,7 +277,20 @@ async function handleAccountSubmit(event) {
         status: data.get("status"),
       },
     })
-    await syncManagedRecord(FIRESTORE_COLLECTIONS.accounts, record)
+    const secureRecord = mergeTelegramSecretsIntoAccount(record, {
+      phoneNumber: textValue(data, "phoneNumber"),
+      apiId: textValue(data, "apiId"),
+      apiHash: textValue(data, "apiHash"),
+      sessionString: "",
+      pendingSessionString: "",
+      pendingPhoneCodeHash: "",
+      pendingPhoneNumber: "",
+    })
+    upsertAccountInState(secureRecord)
+    await syncManagedRecord(FIRESTORE_COLLECTIONS.accounts, secureRecord)
+    if (secureRecord.platform === "telegram") {
+      await persistTelegramAccountSecrets(secureRecord.id, secureRecord)
+    }
     form.reset()
   }, "Account saved")
 }
@@ -335,13 +358,24 @@ async function handleGroupSubmit(event) {
 async function handleTelegramAuthStartSubmit(event) {
   event.preventDefault()
   const data = new FormData(event.currentTarget)
+  const secureAccount = getAccountWithSecrets(textValue(data, "accountId"))
   await runSave(async () => {
-    await api("/api/telegram/auth/start", {
+    const response = await api("/api/telegram/auth/start", {
       method: "POST",
       body: {
         accountId: data.get("accountId"),
+        phoneNumber: secureAccount?.phoneNumber || "",
+        apiId: secureAccount?.apiId || "",
+        apiHash: secureAccount?.apiHash || "",
+        sessionString: secureAccount?.sessionString || "",
+        pendingSessionString: secureAccount?.pendingSessionString || "",
+        pendingPhoneCodeHash: secureAccount?.pendingPhoneCodeHash || "",
+        pendingPhoneNumber: secureAccount?.pendingPhoneNumber || "",
       },
     })
+    if (response?.telegramState) {
+      await persistTelegramAccountSecrets(textValue(data, "accountId"), response.telegramState)
+    }
   }, "Telegram login code sent")
 }
 
@@ -349,15 +383,25 @@ async function handleTelegramAuthVerifySubmit(event) {
   event.preventDefault()
   const form = event.currentTarget
   const data = new FormData(form)
+  const secureAccount = getAccountWithSecrets(textValue(data, "accountId"))
   await runSave(async () => {
-    await api("/api/telegram/auth/verify", {
+    const response = await api("/api/telegram/auth/verify", {
       method: "POST",
       body: {
         accountId: data.get("accountId"),
         phoneCode: textValue(data, "phoneCode"),
         password: textValue(data, "password"),
+        phoneNumber: secureAccount?.phoneNumber || "",
+        apiId: secureAccount?.apiId || "",
+        apiHash: secureAccount?.apiHash || "",
+        pendingSessionString: secureAccount?.pendingSessionString || "",
+        pendingPhoneCodeHash: secureAccount?.pendingPhoneCodeHash || "",
+        pendingPhoneNumber: secureAccount?.pendingPhoneNumber || "",
       },
     })
+    if (response?.telegramState) {
+      await persistTelegramAccountSecrets(textValue(data, "accountId"), response.telegramState)
+    }
     form.reset()
   }, "Telegram account connected")
 }
@@ -387,7 +431,7 @@ async function handleTelegramShareSubmit(event) {
   const campaign = state.campaigns.find((item) => item.id === data.get("campaignId"))
   const template = state.templates.find((item) => item.id === data.get("templateId"))
   const accountId = textValue(data, "accountId")
-  const account = state.accounts.find((item) => item.id === accountId)
+  const account = getAccountWithSecrets(accountId)
   const selectedGroupIds = getSelectedTelegramGroupIds()
   const selectedGroups = state.groups.filter((item) => selectedGroupIds.includes(item.id))
   const customMessage = textValue(data, "customMessage")
@@ -446,6 +490,9 @@ async function handleTelegramShareSubmit(event) {
           accountId,
           accountPhoneNumber: account.phoneNumber || "",
           accountName: account.accountName || "",
+          sessionString: account.sessionString || "",
+          apiId: account.apiId || "",
+          apiHash: account.apiHash || "",
           groupId: target.group?.id || "",
           targetPeer: dispatch.targetPeer,
           campaignId: dispatch.campaignId,
@@ -758,10 +805,13 @@ function renderScheduler() {
   select.innerHTML = state.campaigns.length
     ? state.campaigns.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")
     : `<option value="">No campaigns available</option>`
+  renderSelectOptions("scheduler-account-select", state.accounts.filter((item) => item.platform === "telegram"), "id", "accountName", "No Telegram account saved")
+  renderSelectOptions("scheduler-template-select", state.templates, "id", "title", "No template saved")
 
   renderList("scheduler-list", state.schedulerRules, "No scheduler rules saved yet.", (item) => {
     const campaign = state.campaigns.find((entry) => entry.id === item.campaignId)
-    return renderStandardCard(item.name || "Unnamed rule", formatRuleSubtitle(item, campaign), item.status, `deleteItem('scheduler-rules','${item.id}')`)
+    const account = state.accounts.find((entry) => entry.id === item.accountId)
+    return renderStandardCard(item.name || "Unnamed rule", formatRuleSubtitle(item, campaign, account, item), item.status, `deleteItem('scheduler-rules','${item.id}')`)
   })
 }
 
@@ -832,6 +882,7 @@ function renderTelegram() {
     )
   )
 
+  setText("telegram-group-picker-summary", buildTelegramPickerSummary())
   syncTelegramPreview()
 }
 
@@ -1052,9 +1103,10 @@ function renderStandardCard(title, subtitle, status, deleteAction, tags = [], fo
   `
 }
 
-function formatRuleSubtitle(rule, campaign) {
+function formatRuleSubtitle(rule, campaign, account) {
   const parts = []
   if (campaign?.name) parts.push(`Campaign: ${campaign.name}`)
+  if (account?.accountName) parts.push(`Account: ${account.accountName}`)
   if (rule.mode === "interval" && rule.intervalMinutes) parts.push(`Every ${rule.intervalMinutes} mins`)
   if (rule.dailyTime) parts.push(`Time ${rule.dailyTime}`)
   if (rule.allDays) {
@@ -1064,6 +1116,8 @@ function formatRuleSubtitle(rule, campaign) {
   } else if (rule.mode === "weekly" && rule.weeklyDay) {
     parts.push(`Every ${capitalize(rule.weeklyDay)}`)
   }
+  if (rule.batchSize) parts.push(`Batch ${rule.batchSize}`)
+  if (rule.dispatchIntervalSeconds) parts.push(`Gap ${rule.dispatchIntervalSeconds}s`)
   if (rule.randomDelaySeconds) parts.push(`Delay ${rule.randomDelaySeconds}s`)
   return parts.join(" | ") || "Scheduler rule"
 }
@@ -1328,6 +1382,9 @@ async function refreshWorkspace() {
   await bootstrap()
   hydrateLocalCache()
   await hydratePersistentData()
+  mergeSecureAccountsFromCache()
+  await restoreWorkspaceData()
+  await restoreSecureTelegramAccounts()
   persistLocalCache()
   renderAll()
   applyPermissions()
@@ -1436,8 +1493,9 @@ async function hydratePersistentData() {
   if (!firebaseContext.firestore || !firebaseContext.user) return
 
   try {
-    const [campaigns, accounts, groups, templates, telegramDispatches] = await Promise.all([
+    const [campaigns, schedulerRules, accounts, groups, templates, telegramDispatches] = await Promise.all([
       loadManagedCollection(FIRESTORE_COLLECTIONS.campaigns),
+      loadManagedCollection(FIRESTORE_COLLECTIONS.schedulerRules),
       loadManagedCollection(FIRESTORE_COLLECTIONS.accounts),
       loadManagedCollection(FIRESTORE_COLLECTIONS.groups),
       loadManagedCollection(FIRESTORE_COLLECTIONS.templates),
@@ -1445,6 +1503,7 @@ async function hydratePersistentData() {
     ])
 
     state.campaigns = mergeRecords(campaigns, state.campaigns)
+    state.schedulerRules = mergeRecords(schedulerRules, state.schedulerRules)
     state.accounts = mergeRecords(accounts, state.accounts)
     state.groups = mergeRecords(groups, state.groups)
     state.templates = mergeRecords(templates, state.templates)
@@ -1469,6 +1528,7 @@ function hydrateLocalCache() {
   if (!cached) return
 
   state.campaigns = mergeRecords(state.campaigns, cached.campaigns || [])
+  state.schedulerRules = mergeRecords(state.schedulerRules, cached.schedulerRules || [])
   state.accounts = mergeRecords(state.accounts, cached.accounts || [])
   state.groups = mergeRecords(state.groups, cached.groups || [])
   state.templates = mergeRecords(state.templates, cached.templates || [])
@@ -1482,6 +1542,7 @@ function persistLocalCache() {
 
     window.localStorage.setItem(key, JSON.stringify({
       campaigns: state.campaigns,
+      schedulerRules: state.schedulerRules,
       accounts: state.accounts,
       groups: state.groups,
       templates: state.templates,
@@ -1507,6 +1568,143 @@ function readLocalCache() {
 function getLocalCacheKey() {
   const email = firebaseContext.user?.email || state.session.email || "workspace"
   return `unisolvex-pilot-cache:${String(email).toLowerCase()}`
+}
+
+function getSecureAccountCacheKey() {
+  const email = firebaseContext.user?.email || state.session.email || "workspace"
+  return `unisolvex-pilot-secure-accounts:${String(email).toLowerCase()}`
+}
+
+function readSecureAccountCache() {
+  try {
+    const raw = window.localStorage.getItem(getSecureAccountCacheKey())
+    return raw ? JSON.parse(raw) : {}
+  } catch (error) {
+    console.warn("Secure account cache read failed", error)
+    return {}
+  }
+}
+
+function writeSecureAccountCache(cache) {
+  try {
+    window.localStorage.setItem(getSecureAccountCacheKey(), JSON.stringify(cache || {}))
+  } catch (error) {
+    console.warn("Secure account cache write failed", error)
+  }
+}
+
+function getTelegramSecretFields() {
+  return ["phoneNumber", "apiId", "apiHash", "sessionString", "pendingSessionString", "pendingPhoneCodeHash", "pendingPhoneNumber", "sessionStatus", "telegramLastVerifiedAt", "telegramLastPostedAt"]
+}
+
+function mergeTelegramSecretsIntoAccount(account, secrets = {}) {
+  const merged = { ...(account || {}) }
+  for (const key of getTelegramSecretFields()) {
+    if (secrets[key] !== undefined) merged[key] = secrets[key]
+  }
+  return merged
+}
+
+function getAccountWithSecrets(accountId) {
+  const account = state.accounts.find((item) => item.id === accountId)
+  if (!account) return null
+  const cache = readSecureAccountCache()
+  return mergeTelegramSecretsIntoAccount(account, cache[accountId] || {})
+}
+
+function upsertAccountInState(account) {
+  if (!account?.id) return
+  state.accounts = mergeRecords([account], state.accounts.filter((item) => item.id !== account.id))
+}
+
+function mergeSecureAccountsFromCache() {
+  const cache = readSecureAccountCache()
+  state.accounts = state.accounts.map((account) => mergeTelegramSecretsIntoAccount(account, cache[account.id] || {}))
+}
+
+async function persistTelegramAccountSecrets(accountId, secrets = {}) {
+  if (!accountId) return
+  const cache = readSecureAccountCache()
+  cache[accountId] = {
+    ...(cache[accountId] || {}),
+    ...Object.fromEntries(getTelegramSecretFields().map((key) => [key, secrets[key]]).filter(([, value]) => value !== undefined)),
+  }
+  writeSecureAccountCache(cache)
+
+  const existing = state.accounts.find((item) => item.id === accountId)
+  if (existing) {
+    const merged = mergeTelegramSecretsIntoAccount(existing, cache[accountId])
+    upsertAccountInState(merged)
+    await syncManagedRecord(FIRESTORE_COLLECTIONS.accounts, merged)
+  }
+}
+
+async function restoreSecureTelegramAccounts() {
+  const telegramAccounts = state.accounts
+    .filter((item) => item.platform === "telegram")
+    .map((item) => getAccountWithSecrets(item.id))
+    .filter((item) => item?.id && item.apiId && item.apiHash)
+
+  if (!telegramAccounts.length) return
+
+  try {
+    await api("/api/accounts/restore", {
+      method: "POST",
+      body: {
+        accounts: telegramAccounts.map((item) => ({
+          id: item.id,
+          platform: item.platform,
+          accountName: item.accountName,
+          accountHandle: item.accountHandle,
+          phoneNumber: item.phoneNumber || "",
+          apiId: item.apiId || "",
+          apiHash: item.apiHash || "",
+          sessionString: item.sessionString || "",
+          pendingSessionString: item.pendingSessionString || "",
+          pendingPhoneCodeHash: item.pendingPhoneCodeHash || "",
+          pendingPhoneNumber: item.pendingPhoneNumber || "",
+          sessionStatus: item.sessionStatus || "",
+          telegramLastVerifiedAt: item.telegramLastVerifiedAt || "",
+          telegramLastPostedAt: item.telegramLastPostedAt || "",
+          status: item.status || "connected",
+        })),
+      },
+    })
+  } catch (error) {
+    console.warn("Telegram account restore skipped", error)
+  }
+}
+
+async function restoreWorkspaceData() {
+  const payload = {
+    campaigns: state.campaigns,
+    schedulerRules: state.schedulerRules,
+    groups: state.groups,
+    templates: state.templates,
+    accounts: state.accounts
+      .filter((item) => item.platform !== "telegram")
+      .map((item) => ({
+        id: item.id,
+        platform: item.platform,
+        accountName: item.accountName,
+        accountHandle: item.accountHandle,
+        status: item.status,
+        createdAt: item.createdAt,
+      })),
+  }
+
+  if (!payload.campaigns.length && !payload.schedulerRules.length && !payload.groups.length && !payload.templates.length && !payload.accounts.length) {
+    return
+  }
+
+  try {
+    await api("/api/workspace/restore", {
+      method: "POST",
+      body: payload,
+    })
+  } catch (error) {
+    console.warn("Workspace restore skipped", error)
+  }
 }
 
 async function uploadToCloudinary(file) {
@@ -1776,10 +1974,16 @@ async function deleteSelectedGroups() {
   }
 
   await runSave(async () => {
-    await api("/api/groups/bulk-delete", {
-      method: "POST",
-      body: { ids },
-    })
+    let apiError = null
+
+    try {
+      await api("/api/groups/bulk-delete", {
+        method: "POST",
+        body: { ids },
+      })
+    } catch (error) {
+      apiError = error
+    }
 
     ids.forEach((id) => removeItemFromState("groups", id))
     state.ui.selectedGroupIds = []
@@ -1792,7 +1996,38 @@ async function deleteSelectedGroups() {
         if (!isIgnorableFirestorePermissionError(error)) throw error
       }
     }
+
+    if (apiError && !/not found/i.test(apiError.message)) {
+      throw apiError
+    }
   }, `${ids.length} channels deleted`)
+}
+
+function buildTelegramPickerSummary() {
+  const count = state.ui.selectedTelegramGroupIds.length
+  if (!count) return "Select channels"
+  if (count === 1) return "1 channel selected"
+  return `${count} channels selected`
+}
+
+function startAutomationLoop() {
+  runAutomationLoop()
+  clearInterval(startAutomationLoop.timer)
+  startAutomationLoop.timer = setInterval(runAutomationLoop, AUTOMATION_LOOP_MS)
+}
+
+async function runAutomationLoop() {
+  if (document.body.classList.contains("auth-locked")) return
+
+  try {
+    const response = await api("/api/scheduler/run-due", { method: "POST", body: {} })
+    if (response?.processedCount) {
+      await refreshWorkspace()
+      toast(`${response.processedCount} scheduled batch processed`)
+    }
+  } catch (error) {
+    console.warn("Automation loop skipped", error)
+  }
 }
 
 async function deleteAllGroups() {

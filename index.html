@@ -168,10 +168,14 @@
               <form id="scheduler-form" class="form-grid">
                 <label>Rule Name<input type="text" name="name" required /></label>
                 <label>Campaign<select name="campaignId" id="scheduler-campaign-select"></select></label>
+                <label>Telegram Account<select name="accountId" id="scheduler-account-select"></select></label>
+                <label>Template<select name="templateId" id="scheduler-template-select"></select></label>
                 <label>Mode<select name="mode"><option value="interval">Every X mins</option><option value="daily">Daily timing</option><option value="weekly">Selected days</option></select></label>
                 <label>Status<select name="status"><option value="queued">Queued</option><option value="running">Running</option><option value="paused">Paused</option></select></label>
                 <label>Interval Minutes<input type="number" name="intervalMinutes" min="1" /></label>
                 <label>Daily Time<input type="time" name="dailyTime" /></label>
+                <label>Batch Size<input type="number" name="batchSize" min="1" max="40" value="35" /></label>
+                <label>Interval Gap Seconds<input type="number" name="dispatchIntervalSeconds" min="5" max="300" value="20" /></label>
                 <label class="full">Select Days
                   <div class="checkbox-row">
                     <label><input type="checkbox" name="days" value="all_days" />All Days</label>
@@ -230,12 +234,15 @@
               <div class="section-head">
                 <div><span class="eyebrow">Connected</span><h3>Channel List</h3></div>
               </div>
-              <div class="list-toolbar">
-                <button type="button" class="ghost-button" onclick="toggleAllGroups(true)">Select All</button>
-                <button type="button" class="ghost-button" onclick="toggleAllGroups(false)">Clear</button>
-                <button type="button" class="danger-button" onclick="deleteSelectedGroups()">Delete Selected</button>
-                <button type="button" class="danger-button" onclick="deleteAllGroups()">Delete All</button>
-              </div>
+              <details class="picker-dropdown">
+                <summary class="picker-summary">Bulk Actions</summary>
+                <div class="picker-menu action-menu">
+                  <button type="button" class="ghost-button" onclick="toggleAllGroups(true)">Select All</button>
+                  <button type="button" class="ghost-button" onclick="toggleAllGroups(false)">Clear</button>
+                  <button type="button" class="danger-button" onclick="deleteSelectedGroups()">Delete Selected</button>
+                  <button type="button" class="danger-button" onclick="deleteAllGroups()">Delete All</button>
+                </div>
+              </details>
               <div id="group-list" class="list"></div>
             </article>
           </div>
@@ -278,11 +285,16 @@
                 <label>Telegram Account<select name="accountId" id="telegram-account-select"></select></label>
                 <div class="full">
                   <label for="telegram-target-peer">Group / Channel Selection</label>
-                  <div class="list-toolbar compact-toolbar">
-                    <button type="button" class="ghost-button" onclick="toggleAllTelegramTargets(true)">Select All</button>
-                    <button type="button" class="ghost-button" onclick="toggleAllTelegramTargets(false)">Clear</button>
-                  </div>
-                  <div id="telegram-group-picker" class="selection-list"></div>
+                  <details class="picker-dropdown">
+                    <summary class="picker-summary" id="telegram-group-picker-summary">Select channels</summary>
+                    <div class="picker-menu">
+                      <div class="picker-actions">
+                        <button type="button" class="ghost-button" onclick="toggleAllTelegramTargets(true)">Select All</button>
+                        <button type="button" class="ghost-button" onclick="toggleAllTelegramTargets(false)">Clear</button>
+                      </div>
+                      <div id="telegram-group-picker" class="selection-list"></div>
+                    </div>
+                  </details>
                   <div class="empty-note" id="telegram-group-selection-note">Select one or more Telegram channels, or type a manual peer below.</div>
                 </div>
                 <label>Target Peer<input type="text" name="targetPeer" id="telegram-target-peer" placeholder="@channelusername or @groupusername" /></label>
