@@ -502,13 +502,57 @@ async function safelyDisconnectTelegramClient(client) {
 function normalizeTelegramPeer(value) {
   const raw = String(value || "").trim()
   if (!raw) return ""
-  if (raw.startsWith("https://t.me/")) {
-    return raw.replace("https://t.me/", "@").replace(/\/+$/, "")
+  const urlMatch = raw.match(/https?:\/\/t\.me\/[^\s]+/i)
+  const usernameMatch = raw.match(/@[a-zA-Z0-9_]{4,}/)
+  const candidate = urlMatch?.[0] || usernameMatch?.[0] || raw.split(/\s+/)[0]
+
+  if (/^https?:\/\/t\.me\/(\+|joinchat\/)/i.test(candidate)) {
+    return candidate.replace(/[)\],.!?]+$/g, "")
   }
-  if (raw.startsWith("http://t.me/")) {
-    return raw.replace("http://t.me/", "@").replace(/\/+$/, "")
+
+  if (candidate.startsWith("https://t.me/")) {
+    return candidate.replace("https://t.me/", "@").replace(/\/+$/, "").replace(/[)\],.!?]+$/g, "")
   }
-  return raw
+  if (candidate.startsWith("http://t.me/")) {
+    return candidate.replace("http://t.me/", "@").replace(/\/+$/, "").replace(/[)\],.!?]+$/g, "")
+  }
+  return candidate.replace(/[)\],.!?]+$/g, "")
+}
+
+function extractTelegramInviteHash(value) {
+  const normalized = String(value || "").trim()
+  const plusMatch = normalized.match(/t\.me\/\+([a-zA-Z0-9_-]+)/i)
+  if (plusMatch) return plusMatch[1]
+  const joinChatMatch = normalized.match(/t\.me\/joinchat\/([a-zA-Z0-9_-]+)/i)
+  if (joinChatMatch) return joinChatMatch[1]
+  return ""
+}
+
+async function resolveTelegramTargetEntity(client, targetPeer) {
+  const normalized = normalizeTelegramPeer(targetPeer)
+  if (!normalized) {
+    throw new Error("Telegram target peer is empty")
+  }
+
+  try {
+    return await client.getInputEntity(normalized)
+  } catch (primaryError) {
+    const inviteHash = extractTelegramInviteHash(normalized)
+    if (!inviteHash) {
+      throw primaryError
+    }
+
+    try {
+      const invite = await client.invoke(new Api.messages.CheckChatInvite({ hash: inviteHash }))
+      if (invite?.chat) {
+        return await client.getInputEntity(invite.chat)
+      }
+    } catch (inviteError) {
+      throw primaryError
+    }
+
+    throw primaryError
+  }
 }
 
 function resolveTelegramAccount(store, payload = {}) {
@@ -729,7 +773,8 @@ async function processDueSchedulerRules(store) {
         const targetPeer = normalizeTelegramPeer(target.telegramPeer || target.inviteLink)
         if (!targetPeer) continue
         try {
-          await client.sendMessage(targetPeer, { message })
+          const entity = await resolveTelegramTargetEntity(client, targetPeer)
+          await client.sendMessage(entity, { message })
           processedCount += 1
 
           store.telegramDispatches = store.telegramDispatches || []
@@ -1210,7 +1255,8 @@ async function handleApi(req, res, url) {
 
       let result
       try {
-        result = await client.sendMessage(targetPeer, { message })
+        const entity = await resolveTelegramTargetEntity(client, targetPeer)
+        result = await client.sendMessage(entity, { message })
       } catch (error) {
         const failure = describeTelegramSendError(error, targetPeer)
         addLog(store, {
