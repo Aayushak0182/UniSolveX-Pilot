@@ -508,6 +508,28 @@ function normalizeTelegramPeer(value) {
   return raw
 }
 
+function resolveTelegramAccount(store, payload = {}) {
+  const requestedId = String(payload.accountId || "").trim()
+  const requestedPhone = normalizePhoneNumber(payload.accountPhoneNumber || "")
+  const requestedName = String(payload.accountName || "").trim().toLowerCase()
+  const telegramAccounts = store.accounts.filter((item) => item.platform === "telegram")
+
+  if (!requestedId && !requestedPhone && !requestedName && telegramAccounts.length === 1) {
+    return telegramAccounts[0]
+  }
+
+  return telegramAccounts.find((item) => {
+    if (requestedId && item.id === requestedId) return true
+    if (requestedPhone && normalizePhoneNumber(item.phoneNumber || "") === requestedPhone) return true
+    if (requestedName && String(item.accountName || "").trim().toLowerCase() === requestedName) return true
+    return false
+  })
+}
+
+function normalizePhoneNumber(value) {
+  return String(value || "").replace(/[^\d+]/g, "")
+}
+
 async function handleApi(req, res, url) {
   const store = readStore()
   const requester = getRequester(req, store)
@@ -672,6 +694,30 @@ async function handleApi(req, res, url) {
     return
   }
 
+  if (req.method === "POST" && url.pathname === "/api/groups/bulk-delete") {
+    const payload = await parseBody(req)
+    const ids = Array.isArray(payload.ids) ? payload.ids.map((item) => String(item || "").trim()).filter(Boolean) : []
+
+    if (!ids.length) {
+      sendJson(res, 400, { error: "Select at least one group to delete" })
+      return
+    }
+
+    const before = store.groups.length
+    store.groups = store.groups.filter((item) => !ids.includes(item.id))
+    const deletedCount = before - store.groups.length
+
+    if (!deletedCount) {
+      sendJson(res, 404, { error: "Selected groups not found" })
+      return
+    }
+
+    addLog(store, { type: "groups", status: "info", message: `${deletedCount} groups deleted`, meta: { ids } })
+    writeStore(store)
+    sendJson(res, 200, { ok: true, deletedCount })
+    return
+  }
+
   if (req.method === "POST" && url.pathname === "/api/templates") {
     const payload = await parseBody(req)
     const record = {
@@ -693,7 +739,7 @@ async function handleApi(req, res, url) {
     const account = store.accounts.find((item) => item.id === payload.accountId)
 
     if (!account || account.platform !== "telegram") {
-      sendJson(res, 404, { error: "Telegram account not found" })
+      sendJson(res, 404, { error: "Telegram account not found. Select the account again, or resave/reconnect it if the server was restarted." })
       return
     }
 
@@ -737,7 +783,7 @@ async function handleApi(req, res, url) {
     const account = store.accounts.find((item) => item.id === payload.accountId)
 
     if (!account || account.platform !== "telegram") {
-      sendJson(res, 404, { error: "Telegram account not found" })
+      sendJson(res, 404, { error: "Telegram account not found. Select the account again, or resave/reconnect it if the server was restarted." })
       return
     }
 
@@ -800,10 +846,10 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/telegram/post") {
     const payload = await parseBody(req)
-    const account = store.accounts.find((item) => item.id === payload.accountId)
+    const account = resolveTelegramAccount(store, payload)
 
     if (!account || account.platform !== "telegram") {
-      sendJson(res, 404, { error: "Telegram account not found" })
+      sendJson(res, 404, { error: "Telegram account not found. Select the account again, or resave/reconnect it if the server was restarted." })
       return
     }
 

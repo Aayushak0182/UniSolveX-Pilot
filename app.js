@@ -24,6 +24,10 @@ const state = {
   integrations: {
     aiProvider: "local",
   },
+  ui: {
+    selectedGroupIds: [],
+    selectedTelegramGroupIds: [],
+  },
 }
 
 const sectionTitles = {
@@ -382,54 +386,85 @@ async function handleTelegramShareSubmit(event) {
   const data = new FormData(form)
   const campaign = state.campaigns.find((item) => item.id === data.get("campaignId"))
   const template = state.templates.find((item) => item.id === data.get("templateId"))
-  const account = state.accounts.find((item) => item.id === data.get("accountId"))
-  const group = state.groups.find((item) => item.id === data.get("groupId"))
+  const accountId = textValue(data, "accountId")
+  const account = state.accounts.find((item) => item.id === accountId)
+  const selectedGroupIds = getSelectedTelegramGroupIds()
+  const selectedGroups = state.groups.filter((item) => selectedGroupIds.includes(item.id))
   const customMessage = textValue(data, "customMessage")
   const message = buildTelegramMessage({ campaign, template, customMessage })
+
+  if (!accountId || !account) {
+    toast("Telegram account select kijiye, phir dubara post kariye", true)
+    return
+  }
 
   if (!message) {
     toast("Choose a template or campaign, or write a Telegram message first", true)
     return
   }
 
-  const dispatch = {
-    id: `tg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    accountId: account?.id || "",
-    accountName: account?.accountName || "",
-    campaignId: campaign?.id || "",
-    campaignName: campaign?.name || "",
-    templateId: template?.id || "",
-    templateTitle: template?.title || "",
-    groupId: group?.id || "",
-    groupName: group?.name || "",
-    message,
-    targetPeer: textValue(data, "targetPeer") || group?.telegramPeer || group?.inviteLink || "",
-    status: "sent",
-    createdAt: new Date().toISOString(),
+  const manualTargetPeer = textValue(data, "targetPeer")
+  const targets = selectedGroups.length
+    ? selectedGroups.map((group) => ({
+      group,
+      targetPeer: manualTargetPeer || group.telegramPeer || group.inviteLink || "",
+    }))
+    : [{
+      group: null,
+      targetPeer: manualTargetPeer,
+    }]
+
+  const validTargets = targets.filter((item) => item.targetPeer)
+  if (!validTargets.length) {
+    toast("Kam se kam ek channel select kijiye ya manual target peer dijiye", true)
+    return
   }
 
   await runSave(async () => {
-    state.telegramDispatches = mergeRecords([dispatch], state.telegramDispatches)
-    persistLocalCache()
-    const response = await api("/api/telegram/post", {
-      method: "POST",
-      body: {
-        accountId: data.get("accountId"),
-        accountPhoneNumber: account?.phoneNumber || "",
-        accountName: account?.accountName || "",
-        groupId: data.get("groupId"),
-        targetPeer: dispatch.targetPeer,
-        campaignId: dispatch.campaignId,
-        templateId: dispatch.templateId,
+    const createdDispatches = []
+
+    for (const target of validTargets) {
+      const dispatch = {
+        id: `tg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        accountId: account.id,
+        accountName: account.accountName || "",
+        campaignId: campaign?.id || "",
+        campaignName: campaign?.name || "",
+        templateId: template?.id || "",
+        templateTitle: template?.title || "",
+        groupId: target.group?.id || "",
+        groupName: target.group?.name || "",
         message,
-      },
-    })
-    dispatch.messageId = response.messageId || ""
-    dispatch.targetPeer = response.targetPeer || dispatch.targetPeer
-    state.telegramDispatches = mergeRecords([dispatch], state.telegramDispatches)
-    await syncManagedRecord(FIRESTORE_COLLECTIONS.telegramDispatches, dispatch)
+        targetPeer: target.targetPeer,
+        status: "sent",
+        createdAt: new Date().toISOString(),
+      }
+
+      const response = await api("/api/telegram/post", {
+        method: "POST",
+        body: {
+          accountId,
+          accountPhoneNumber: account.phoneNumber || "",
+          accountName: account.accountName || "",
+          groupId: target.group?.id || "",
+          targetPeer: dispatch.targetPeer,
+          campaignId: dispatch.campaignId,
+          templateId: dispatch.templateId,
+          message,
+        },
+      })
+
+      dispatch.messageId = response.messageId || ""
+      dispatch.targetPeer = response.targetPeer || dispatch.targetPeer
+      createdDispatches.push(dispatch)
+      await syncManagedRecord(FIRESTORE_COLLECTIONS.telegramDispatches, dispatch)
+    }
+
+    state.telegramDispatches = mergeRecords(createdDispatches, state.telegramDispatches)
+    persistLocalCache()
     form.reset()
-  }, "Telegram message posted")
+    state.ui.selectedTelegramGroupIds = []
+  }, validTargets.length > 1 ? `${validTargets.length} Telegram messages posted` : "Telegram message posted")
 }
 
 async function handleMediaSubmit(event) {
@@ -746,15 +781,28 @@ function renderAccounts() {
 }
 
 function renderGroups() {
-  renderList("group-list", state.groups, "No channels connected yet.", (item) =>
-    renderStandardCard(
-      item.name || "Unnamed channel",
-      [capitalize(item.platform), item.telegramPeer || "no telegram peer", item.inviteLink || "no import link"].filter(Boolean).join(" | "),
-      item.status,
-      `deleteItem('groups','${item.id}')`,
-      item.categoryTags
-    )
-  )
+  const root = document.getElementById("group-list")
+  if (!root) return
+
+  if (!state.groups.length) {
+    root.innerHTML = `<div class="empty-state">No channels connected yet.</div>`
+    return
+  }
+
+  root.innerHTML = state.groups.map((item) => `
+    <div class="list-item">
+      <label class="selection-item">
+        <input type="checkbox" ${state.ui.selectedGroupIds.includes(item.id) ? "checked" : ""} onchange="toggleGroupSelection('${escapeHtml(item.id)}', this.checked)" />
+        <div class="selection-copy">
+          <strong>${escapeHtml(item.name || "Unnamed channel")}</strong>
+          <span>${escapeHtml([capitalize(item.platform), item.telegramPeer || "no telegram peer", item.inviteLink || "no import link"].filter(Boolean).join(" | "))}</span>
+          ${Array.isArray(item.categoryTags) && item.categoryTags.length ? `<div class="badge-line">${item.categoryTags.map((tag) => `<span class="badge">${escapeHtml(capitalize(tag))}</span>`).join("")}</div>` : ""}
+          <span class="status-badge ${escapeHtml(item.status || "info")}">${escapeHtml(item.status || "info")}</span>
+        </div>
+      </label>
+      <div class="item-actions"><button class="danger-button" onclick="deleteItem('groups','${item.id}')">Delete</button></div>
+    </div>
+  `).join("")
 }
 
 function renderTelegram() {
@@ -762,7 +810,10 @@ function renderTelegram() {
   renderSelectOptions("telegram-auth-account-select", telegramAccounts, "id", "accountName", "No Telegram account saved")
   renderSelectOptions("telegram-verify-account-select", telegramAccounts, "id", "accountName", "No Telegram account saved")
   renderSelectOptions("telegram-account-select", telegramAccounts, "id", "accountName", "No Telegram account saved")
-  renderTelegramGroupOptions("telegram-group-select", state.groups.filter((item) => item.platform === "telegram"))
+  ensureSelectHasValue("telegram-auth-account-select")
+  ensureSelectHasValue("telegram-verify-account-select")
+  ensureSelectHasValue("telegram-account-select")
+  renderTelegramGroupPicker(state.groups.filter((item) => item.platform === "telegram"))
   renderSelectOptions("telegram-campaign-select", state.campaigns, "id", "name", "No campaign saved")
   renderSelectOptions("telegram-template-select", state.templates, "id", "title", "No template saved")
 
@@ -933,19 +984,36 @@ function renderList(targetId, items, emptyMessage, renderer) {
 function renderSelectOptions(targetId, items, valueKey, labelKey, emptyLabel) {
   const root = document.getElementById(targetId)
   if (!root) return
+  const currentValue = root.value
 
   root.innerHTML = items.length
     ? [`<option value="">Select</option>`, ...items.map((item) => `<option value="${escapeHtml(item[valueKey])}">${escapeHtml(item[labelKey] || "Untitled")}</option>`)].join("")
     : `<option value="">${escapeHtml(emptyLabel)}</option>`
+
+  if (items.some((item) => String(item[valueKey]) === currentValue)) {
+    root.value = currentValue
+  }
 }
 
-function renderTelegramGroupOptions(targetId, items) {
-  const root = document.getElementById(targetId)
+function renderTelegramGroupPicker(items) {
+  const root = document.getElementById("telegram-group-picker")
   if (!root) return
 
+  state.ui.selectedTelegramGroupIds = state.ui.selectedTelegramGroupIds.filter((id) => items.some((item) => item.id === id))
+
   root.innerHTML = items.length
-    ? [`<option value="">Select</option>`, ...items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(buildTelegramGroupLabel(item))}</option>`)].join("")
-    : `<option value="">No Telegram group/channel saved</option>`
+    ? items.map((item) => `
+      <label class="selection-item">
+        <input type="checkbox" ${state.ui.selectedTelegramGroupIds.includes(item.id) ? "checked" : ""} onchange="toggleTelegramTarget('${escapeHtml(item.id)}', this.checked)" />
+        <div class="selection-copy">
+          <strong>${escapeHtml(item.name || "Unnamed Telegram channel")}</strong>
+          <span>${escapeHtml(buildTelegramGroupLabel(item))}</span>
+        </div>
+      </label>
+    `).join("")
+    : `<div class="empty-state">No Telegram group/channel saved</div>`
+
+  setText("telegram-group-selection-note", buildTelegramSelectionNote(items))
 }
 
 function renderPlatformCard(item) {
@@ -1588,7 +1656,8 @@ function syncTelegramPreview() {
   const data = new FormData(form)
   const campaign = state.campaigns.find((item) => item.id === data.get("campaignId"))
   const template = state.templates.find((item) => item.id === data.get("templateId"))
-  const group = state.groups.find((item) => item.id === data.get("groupId"))
+  const selectedGroups = state.groups.filter((item) => getSelectedTelegramGroupIds().includes(item.id))
+  const primaryGroup = selectedGroups[0]
   const message = buildTelegramMessage({
     campaign,
     template,
@@ -1599,13 +1668,18 @@ function syncTelegramPreview() {
     messageField.value = message
   }
 
-  if (targetPeerField && !targetPeerField.value.trim() && group?.telegramPeer) {
-    targetPeerField.value = group.telegramPeer
+  if (targetPeerField && !targetPeerField.value.trim() && selectedGroups.length === 1 && primaryGroup?.telegramPeer) {
+    targetPeerField.value = primaryGroup.telegramPeer
   }
 
-  const targetPeer = targetPeerField?.value?.trim() || group?.telegramPeer || group?.inviteLink || ""
+  const targetPeer = targetPeerField?.value?.trim() || primaryGroup?.telegramPeer || primaryGroup?.inviteLink || ""
+  const groupLine = selectedGroups.length > 1
+    ? `Targets: ${selectedGroups.length} selected channels`
+    : targetPeer
+      ? `Target: ${targetPeer}`
+      : ""
   preview.textContent = message
-    ? `${targetPeer ? `Target: ${targetPeer}\n\n` : ""}${message}`
+    ? `${groupLine ? `${groupLine}\n\n` : ""}${message}`
     : "Telegram preview will appear here once you select a template or campaign."
 }
 
@@ -1659,6 +1733,92 @@ function removeItemFromState(collection, id) {
   const key = stateKeyMap[collection]
   if (!key || !Array.isArray(state[key])) return
   state[key] = state[key].filter((item) => item.id !== id)
+
+  if (collection === "groups") {
+    state.ui.selectedGroupIds = state.ui.selectedGroupIds.filter((itemId) => itemId !== id)
+    state.ui.selectedTelegramGroupIds = state.ui.selectedTelegramGroupIds.filter((itemId) => itemId !== id)
+  }
+}
+
+function ensureSelectHasValue(targetId) {
+  const root = document.getElementById(targetId)
+  if (!root || root.value || root.options.length < 2) return
+  root.value = root.options[1].value
+}
+
+function buildTelegramSelectionNote(items) {
+  const selectedCount = state.ui.selectedTelegramGroupIds.length
+  if (!items.length) return "Select one or more Telegram channels, or type a manual peer below."
+  if (!selectedCount) return `${items.length} Telegram channels available. Select some or use Select All.`
+  return `${selectedCount} Telegram channels selected for posting.`
+}
+
+function getSelectedTelegramGroupIds() {
+  return [...state.ui.selectedTelegramGroupIds]
+}
+
+function toggleGroupSelection(id, checked) {
+  state.ui.selectedGroupIds = checked
+    ? uniqueIds([...state.ui.selectedGroupIds, id])
+    : state.ui.selectedGroupIds.filter((item) => item !== id)
+}
+
+function toggleAllGroups(checked) {
+  state.ui.selectedGroupIds = checked ? state.groups.map((item) => item.id) : []
+  renderGroups()
+}
+
+async function deleteSelectedGroups() {
+  const ids = [...state.ui.selectedGroupIds]
+  if (!ids.length) {
+    toast("Delete karne ke liye pehle channels select kijiye", true)
+    return
+  }
+
+  await runSave(async () => {
+    await api("/api/groups/bulk-delete", {
+      method: "POST",
+      body: { ids },
+    })
+
+    ids.forEach((id) => removeItemFromState("groups", id))
+    state.ui.selectedGroupIds = []
+    persistLocalCache()
+
+    for (const id of ids) {
+      try {
+        await removeManagedRecord(FIRESTORE_COLLECTIONS.groups, id)
+      } catch (error) {
+        if (!isIgnorableFirestorePermissionError(error)) throw error
+      }
+    }
+  }, `${ids.length} channels deleted`)
+}
+
+async function deleteAllGroups() {
+  if (!state.groups.length) {
+    toast("Delete karne ke liye koi channel nahi hai", true)
+    return
+  }
+  state.ui.selectedGroupIds = state.groups.map((item) => item.id)
+  await deleteSelectedGroups()
+}
+
+function toggleTelegramTarget(id, checked) {
+  state.ui.selectedTelegramGroupIds = checked
+    ? uniqueIds([...state.ui.selectedTelegramGroupIds, id])
+    : state.ui.selectedTelegramGroupIds.filter((item) => item !== id)
+  renderTelegram()
+}
+
+function toggleAllTelegramTargets(checked) {
+  const telegramIds = state.groups.filter((item) => item.platform === "telegram").map((item) => item.id)
+  state.ui.selectedTelegramGroupIds = checked ? telegramIds : []
+  renderTelegram()
+}
+
+function uniqueIds(items = []) {
+  return [...new Set(items.filter(Boolean))]
 }
 
 function isIgnorableFirestorePermissionError(error) {
@@ -1678,3 +1838,9 @@ function escapeHtml(value) {
 window.deleteItem = deleteItem
 window.updateTicketStatus = updateTicketStatus
 window.deleteTelegramDispatch = deleteTelegramDispatch
+window.toggleGroupSelection = toggleGroupSelection
+window.toggleAllGroups = toggleAllGroups
+window.deleteSelectedGroups = deleteSelectedGroups
+window.deleteAllGroups = deleteAllGroups
+window.toggleTelegramTarget = toggleTelegramTarget
+window.toggleAllTelegramTargets = toggleAllTelegramTargets

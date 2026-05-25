@@ -226,7 +226,18 @@
                 <div class="full action-end"><button type="submit" class="primary-button">Connect Channel</button></div>
               </form>
             </article>
-            <article class="panel glass"><div class="section-head"><div><span class="eyebrow">Connected</span><h3>Channel List</h3></div></div><div id="group-list" class="list"></div></article>
+            <article class="panel glass">
+              <div class="section-head">
+                <div><span class="eyebrow">Connected</span><h3>Channel List</h3></div>
+              </div>
+              <div class="list-toolbar">
+                <button type="button" class="ghost-button" onclick="toggleAllGroups(true)">Select All</button>
+                <button type="button" class="ghost-button" onclick="toggleAllGroups(false)">Clear</button>
+                <button type="button" class="danger-button" onclick="deleteSelectedGroups()">Delete Selected</button>
+                <button type="button" class="danger-button" onclick="deleteAllGroups()">Delete All</button>
+              </div>
+              <div id="group-list" class="list"></div>
+            </article>
           </div>
         </section>
 
@@ -265,7 +276,15 @@
               <div class="section-head"><div><span class="eyebrow">Post</span><h3>Direct Telegram Posting</h3></div></div>
               <form id="telegram-share-form" class="form-grid">
                 <label>Telegram Account<select name="accountId" id="telegram-account-select"></select></label>
-                <label>Group / Channel<select name="groupId" id="telegram-group-select"></select></label>
+                <div class="full">
+                  <label for="telegram-target-peer">Group / Channel Selection</label>
+                  <div class="list-toolbar compact-toolbar">
+                    <button type="button" class="ghost-button" onclick="toggleAllTelegramTargets(true)">Select All</button>
+                    <button type="button" class="ghost-button" onclick="toggleAllTelegramTargets(false)">Clear</button>
+                  </div>
+                  <div id="telegram-group-picker" class="selection-list"></div>
+                  <div class="empty-note" id="telegram-group-selection-note">Select one or more Telegram channels, or type a manual peer below.</div>
+                </div>
                 <label>Target Peer<input type="text" name="targetPeer" id="telegram-target-peer" placeholder="@channelusername or @groupusername" /></label>
                 <label>Campaign<select name="campaignId" id="telegram-campaign-select"></select></label>
                 <label>Template<select name="templateId" id="telegram-template-select"></select></label>

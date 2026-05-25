@@ -414,6 +414,51 @@ body.auth-locked .app-shell {
   justify-content: flex-end;
 }
 
+.list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.compact-toolbar {
+  margin-top: 10px;
+  margin-bottom: 10px;
+}
+
+.selection-list {
+  display: grid;
+  gap: 10px;
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.selection-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(17, 76, 95, 0.08);
+}
+
+.selection-item input[type="checkbox"] {
+  width: auto;
+  margin: 2px 0 0;
+  flex-shrink: 0;
+}
+
+.selection-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.selection-copy strong {
+  margin: 0;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
