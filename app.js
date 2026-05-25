@@ -277,8 +277,8 @@ async function handleGroupSubmit(event) {
     const platform = data.get("platform")
     const categoryTags = splitTags(data.get("categoryTags"))
 
-    if (inviteFile && inviteFile.size && isCsvFile(inviteFile)) {
-      const importedGroups = await parseGroupCsvFile(inviteFile, {
+    if (inviteFile && inviteFile.size && isStructuredGroupImportFile(inviteFile)) {
+      const importedGroups = await parseImportedGroupFile(inviteFile, {
         platform,
         fallbackName: textValue(data, "name"),
         fallbackPeer: textValue(data, "telegramPeer"),
@@ -287,7 +287,7 @@ async function handleGroupSubmit(event) {
       })
 
       if (!importedGroups.length) {
-        throw new Error("CSV me koi valid group/channel row nahi mila")
+        throw new Error("Import file me koi valid group/channel row nahi mila")
       }
 
       for (const item of importedGroups) {
@@ -299,7 +299,7 @@ async function handleGroupSubmit(event) {
       }
 
       form.reset()
-      toast(`${importedGroups.length} channels imported from CSV`)
+      toast(`${importedGroups.length} channels imported`)
       return
     }
 
@@ -307,12 +307,18 @@ async function handleGroupSubmit(event) {
     if (!inviteLink && inviteFile && inviteFile.size) {
       inviteLink = await uploadToCloudinary(inviteFile)
     }
+    const telegramPeer = textValue(data, "telegramPeer")
+    const name = textValue(data, "name") || inferNameFromInputs({
+      telegramPeer,
+      inviteLink,
+      fallbackName: inviteFile?.name || "",
+    })
     const record = await api("/api/groups", {
       method: "POST",
       body: {
-        name: textValue(data, "name"),
+        name,
         platform,
-        telegramPeer: textValue(data, "telegramPeer"),
+        telegramPeer,
         inviteLink,
         categoryTags,
       },
@@ -409,6 +415,8 @@ async function handleTelegramShareSubmit(event) {
       method: "POST",
       body: {
         accountId: data.get("accountId"),
+        accountPhoneNumber: account?.phoneNumber || "",
+        accountName: account?.accountName || "",
         groupId: data.get("groupId"),
         targetPeer: dispatch.targetPeer,
         campaignId: dispatch.campaignId,
@@ -741,7 +749,7 @@ function renderGroups() {
   renderList("group-list", state.groups, "No channels connected yet.", (item) =>
     renderStandardCard(
       item.name || "Unnamed channel",
-      `${capitalize(item.platform)} | ${item.telegramPeer || item.inviteLink || "no import link"}`,
+      [capitalize(item.platform), item.telegramPeer || "no telegram peer", item.inviteLink || "no import link"].filter(Boolean).join(" | "),
       item.status,
       `deleteItem('groups','${item.id}')`,
       item.categoryTags
@@ -754,7 +762,7 @@ function renderTelegram() {
   renderSelectOptions("telegram-auth-account-select", telegramAccounts, "id", "accountName", "No Telegram account saved")
   renderSelectOptions("telegram-verify-account-select", telegramAccounts, "id", "accountName", "No Telegram account saved")
   renderSelectOptions("telegram-account-select", telegramAccounts, "id", "accountName", "No Telegram account saved")
-  renderSelectOptions("telegram-group-select", state.groups.filter((item) => item.platform === "telegram"), "id", "name", "No Telegram group/channel saved")
+  renderTelegramGroupOptions("telegram-group-select", state.groups.filter((item) => item.platform === "telegram"))
   renderSelectOptions("telegram-campaign-select", state.campaigns, "id", "name", "No campaign saved")
   renderSelectOptions("telegram-template-select", state.templates, "id", "title", "No template saved")
 
@@ -931,6 +939,15 @@ function renderSelectOptions(targetId, items, valueKey, labelKey, emptyLabel) {
     : `<option value="">${escapeHtml(emptyLabel)}</option>`
 }
 
+function renderTelegramGroupOptions(targetId, items) {
+  const root = document.getElementById(targetId)
+  if (!root) return
+
+  root.innerHTML = items.length
+    ? [`<option value="">Select</option>`, ...items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(buildTelegramGroupLabel(item))}</option>`)].join("")
+    : `<option value="">No Telegram group/channel saved</option>`
+}
+
 function renderPlatformCard(item) {
   const total = buildPlatformStats().reduce((sum, entry) => sum + entry.count, 0) || 1
   const width = Math.round((item.count / total) * 100)
@@ -1012,9 +1029,62 @@ function isCsvFile(file) {
   return name.endsWith(".csv") || file?.type === "text/csv"
 }
 
+function isTextLinkFile(file) {
+  const name = String(file?.name || "").toLowerCase()
+  return name.endsWith(".txt") || file?.type === "text/plain"
+}
+
+function isSpreadsheetFile(file) {
+  const name = String(file?.name || "").toLowerCase()
+  return name.endsWith(".xls") || name.endsWith(".xlsx")
+}
+
+function isStructuredGroupImportFile(file) {
+  return isCsvFile(file) || isTextLinkFile(file) || isSpreadsheetFile(file)
+}
+
 async function parseGroupCsvFile(file, options) {
   const text = await file.text()
   const rows = parseCsvText(text)
+  return mapImportedRowsToGroups(rows, options)
+}
+
+async function parseGroupTextFile(file, options) {
+  const text = await file.text()
+  const rows = text
+    .split(/\r?\n/)
+    .map((line) => [line.trim()])
+    .filter((row) => row[0])
+  return mapImportedRowsToGroups(rows, options)
+}
+
+async function parseGroupSpreadsheetFile(file, options) {
+  if (!window.XLSX) {
+    throw new Error("Spreadsheet import library load nahi hui. Page refresh karke dobara try karo.")
+  }
+
+  const buffer = await file.arrayBuffer()
+  const workbook = window.XLSX.read(buffer, { type: "array" })
+  const firstSheetName = workbook.SheetNames[0]
+  if (!firstSheetName) return []
+
+  const sheet = workbook.Sheets[firstSheetName]
+  const rows = window.XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    raw: false,
+    defval: "",
+  })
+  return mapImportedRowsToGroups(rows, options)
+}
+
+async function parseImportedGroupFile(file, options) {
+  if (isCsvFile(file)) return parseGroupCsvFile(file, options)
+  if (isTextLinkFile(file)) return parseGroupTextFile(file, options)
+  if (isSpreadsheetFile(file)) return parseGroupSpreadsheetFile(file, options)
+  return []
+}
+
+function mapImportedRowsToGroups(rows, options) {
   if (!rows.length) return []
 
   const maybeHeader = rows[0].map(normalizeColumnName)
@@ -1118,11 +1188,21 @@ function inferNameFromRow(first, second, telegramPeer, inviteLink, fallbackName)
   const firstValue = String(first || "").trim()
   const secondValue = String(second || "").trim()
 
-  if (firstValue && !firstValue.startsWith("@") && !firstValue.includes("t.me/")) return firstValue
-  if (secondValue && !secondValue.startsWith("@") && !secondValue.includes("t.me/")) return secondValue
+  if (isUsefulImportedName(firstValue)) return firstValue
+  if (isUsefulImportedName(secondValue)) return secondValue
+  return inferNameFromInputs({ telegramPeer, inviteLink, fallbackName })
+}
+
+function inferNameFromInputs({ telegramPeer, inviteLink, fallbackName }) {
   if (telegramPeer) return telegramPeer.replace(/^@/, "")
-  if (inviteLink) return inviteLink.replace(/^https?:\/\//i, "")
-  return fallbackName || ""
+
+  const linkName = extractTelegramNameFromLink(inviteLink)
+  if (isUsefulImportedName(linkName)) return linkName
+
+  const cleanedFallback = String(fallbackName || "").trim().replace(/\.[a-z0-9]+$/i, "")
+  if (isUsefulImportedName(cleanedFallback)) return cleanedFallback
+
+  return String(fallbackName || "").trim()
 }
 
 function normalizeColumnName(value) {
@@ -1136,6 +1216,26 @@ function normalizeTelegramPeerInput(value) {
     return `@${raw.replace(/^https?:\/\/t\.me\//i, "").replace(/\/+$/, "")}`
   }
   return raw
+}
+
+function buildTelegramGroupLabel(item) {
+  const name = item?.name || "Unnamed channel"
+  const target = item?.telegramPeer || item?.inviteLink || "no link"
+  return `${name} | ${target}`
+}
+
+function isUsefulImportedName(value) {
+  const text = String(value || "").trim()
+  if (!text) return false
+  if (text.startsWith("@") || text.includes("t.me/")) return false
+  return !["telegram", "group", "channel", "telegramgroup", "telegramchannel"].includes(normalizeColumnName(text))
+}
+
+function extractTelegramNameFromLink(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^https?:\/\/t\.me\//i, "")
+    .replace(/\/+$/, "")
 }
 
 function textValue(formData, key) {

@@ -14,6 +14,7 @@
     <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
     <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
     <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script defer src="./app-config.js"></script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -215,12 +216,12 @@
             <article class="panel glass">
               <div class="section-head"><div><span class="eyebrow">Manage</span><h3>Groups / Channels</h3></div></div>
               <form id="group-form" class="form-grid">
-                <label>Group / Channel Name<input type="text" name="name" required /></label>
+                <label>Group / Channel Name<input type="text" name="name" /></label>
                 <label>Platform<select name="platform" required><option value="telegram">Telegram</option><option value="facebook">Facebook</option><option value="discord">Discord</option><option value="whatsapp">WhatsApp</option></select></label>
                 <label class="full">Telegram Peer / Username<input type="text" name="telegramPeer" placeholder="@channelusername or @groupusername" /></label>
                 <label class="full">Import Link<input type="url" name="inviteLink" placeholder="https://..." /></label>
                 <label class="full">Link Attachment<input type="file" name="inviteFile" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" /></label>
-                <div class="full empty-note">CSV import supported. Recommended columns: <code>name</code>, <code>telegram_peer</code>, <code>invite_link</code>, <code>platform</code>, <code>tags</code>.</div>
+                <div class="full empty-note">CSV, TXT, XLS, and XLSX import supported. Recommended columns: <code>name</code>, <code>telegram_peer</code>, <code>invite_link</code>, <code>platform</code>, <code>tags</code>.</div>
                 <label class="full">Category Tags<input type="text" name="categoryTags" placeholder="education, premium, leads" /></label>
                 <div class="full action-end"><button type="submit" class="primary-button">Connect Channel</button></div>
               </form>
