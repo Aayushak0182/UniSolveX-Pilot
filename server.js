@@ -785,7 +785,11 @@ function createSchedulerMessage(store, rule) {
 }
 
 function getSchedulerTargets(store, rule) {
-  const telegramGroups = store.groups.filter((item) => item.platform === "telegram" && (item.telegramPeer || item.inviteLink))
+  const selectedIds = Array.isArray(rule.targetGroupIds) ? rule.targetGroupIds.map((item) => String(item || "").trim()).filter(Boolean) : []
+  const telegramGroups = store.groups.filter((item) => {
+    if (item.platform !== "telegram" || (!item.telegramPeer && !item.inviteLink)) return false
+    return !selectedIds.length || selectedIds.includes(item.id)
+  })
   if (!telegramGroups.length) return []
 
   const batchSize = Math.min(Math.max(Number(rule.batchSize) || 35, 1), 40)
@@ -826,13 +830,28 @@ function calculateNextRunAt(rule, now = new Date()) {
     return new Date(now.getTime() + (intervalMinutes * 60000)).toISOString()
   }
 
-  const next = new Date(now)
-  next.setDate(next.getDate() + 1)
-  if (rule.dailyTime) {
-    const [hours, minutes] = String(rule.dailyTime).split(":").map((value) => Number(value) || 0)
-    next.setHours(hours, minutes, 0, 0)
+  if (!rule.dailyTime) {
+    return now.toISOString()
   }
-  return next.toISOString()
+
+  const allowedDays = Array.isArray(rule.days) && rule.days.length
+    ? rule.days
+    : WEEK_DAYS
+  const [hours, minutes] = String(rule.dailyTime).split(":").map((value) => Number(value) || 0)
+
+  for (let offset = 0; offset <= 7; offset += 1) {
+    const next = new Date(now)
+    next.setDate(now.getDate() + offset)
+    next.setHours(hours, minutes, 0, 0)
+    const day = WEEK_DAYS[next.getDay() === 0 ? 6 : next.getDay() - 1]
+    if (allowedDays.includes(day) && next.getTime() > now.getTime()) {
+      return next.toISOString()
+    }
+  }
+
+  const fallback = new Date(now.getTime() + 86400000)
+  fallback.setHours(hours, minutes, 0, 0)
+  return fallback.toISOString()
 }
 
 async function runSchedulerTick() {
@@ -1071,6 +1090,17 @@ async function handleApi(req, res, url) {
     const normalizedDays = allDays
       ? ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
       : days.filter(Boolean)
+    const targetGroupIds = Array.isArray(payload.targetGroupIds)
+      ? [...new Set(payload.targetGroupIds.map((item) => String(item || "").trim()).filter(Boolean))]
+      : []
+    const targetGroups = store.groups
+      .filter((item) => targetGroupIds.includes(item.id))
+      .map((item) => ({
+        id: item.id,
+        name: item.name || "",
+        telegramPeer: item.telegramPeer || "",
+        inviteLink: item.inviteLink || "",
+      }))
 
     const record = {
       id: generateId("rule"),
@@ -1086,10 +1116,16 @@ async function handleApi(req, res, url) {
       dispatchIntervalSeconds: Math.max(Number(payload.dispatchIntervalSeconds) || 20, 5),
       days: normalizedDays,
       allDays,
+      targetGroupIds,
+      targetGroups,
       randomDelaySeconds: payload.randomDelaySeconds || "",
       status: payload.status || "queued",
       lastRunAt: "",
-      nextRunAt: "",
+      nextRunAt: calculateNextRunAt({
+        mode: payload.mode || "interval",
+        intervalMinutes: payload.intervalMinutes || "",
+        dailyTime: payload.dailyTime || "",
+      }, new Date()),
       lastGroupCursor: 0,
       createdBy: requester.email || "",
       createdAt: new Date().toISOString(),
@@ -1102,8 +1138,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/scheduler/run-due") {
-    const processedCount = await processDueSchedulerRules(store)
-    await writeStore(store)
+    const processedCount = await runSchedulerTick()
     sendJson(res, 200, { ok: true, processedCount })
     return
   }

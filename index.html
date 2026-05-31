@@ -176,6 +176,20 @@
                 <label>Daily Time<input type="time" name="dailyTime" /></label>
                 <label>Batch Size<input type="number" name="batchSize" min="1" max="40" value="35" /></label>
                 <label>Interval Gap Seconds<input type="number" name="dispatchIntervalSeconds" min="5" max="300" value="20" /></label>
+                <div class="full">
+                  <label>Marketing Channels</label>
+                  <details class="picker-dropdown">
+                    <summary class="picker-summary" id="scheduler-target-summary">All channels</summary>
+                    <div class="picker-menu">
+                      <div class="picker-actions">
+                        <button type="button" class="ghost-button" onclick="toggleAllSchedulerTargets(true)">Select All</button>
+                        <button type="button" class="ghost-button" onclick="toggleAllSchedulerTargets(false)">Use All</button>
+                      </div>
+                      <div id="scheduler-target-picker" class="selection-list"></div>
+                    </div>
+                  </details>
+                  <div class="empty-note" id="scheduler-target-note">Choose channels for this schedule, or leave empty to use all Telegram channels.</div>
+                </div>
                 <label class="full">Select Days
                   <div class="checkbox-row">
                     <label><input type="checkbox" name="days" value="all_days" />All Days</label>

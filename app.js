@@ -27,6 +27,7 @@ const state = {
   ui: {
     selectedGroupIds: [],
     selectedTelegramGroupIds: [],
+    selectedSchedulerGroupIds: [],
   },
 }
 
@@ -250,6 +251,7 @@ async function handleSchedulerSubmit(event) {
   const form = event.currentTarget
   const data = new FormData(form)
   const days = data.getAll("days")
+  const targetGroupIds = getSelectedSchedulerGroupIds()
   await runSave(async () => {
     const record = await api("/api/scheduler-rules", {
       method: "POST",
@@ -265,11 +267,13 @@ async function handleSchedulerSubmit(event) {
         dispatchIntervalSeconds: data.get("dispatchIntervalSeconds"),
         days,
         allDays: days.includes("all_days"),
+        targetGroupIds,
         randomDelaySeconds: data.get("randomDelaySeconds"),
         status: data.get("status"),
       },
     })
     await syncManagedRecord(FIRESTORE_COLLECTIONS.schedulerRules, record)
+    state.ui.selectedSchedulerGroupIds = []
     form.reset()
   }, "Scheduler rule saved")
 }
@@ -795,11 +799,12 @@ function renderScheduler() {
     : `<option value="">No campaigns available</option>`
   renderSelectOptions("scheduler-account-select", state.accounts.filter((item) => item.platform === "telegram"), "id", "accountName", "No Telegram account saved")
   renderSelectOptions("scheduler-template-select", state.templates, "id", "title", "No template saved")
+  renderSchedulerTargetPicker(state.groups.filter((item) => item.platform === "telegram"))
 
   renderList("scheduler-list", state.schedulerRules, "No scheduler rules saved yet.", (item) => {
     const campaign = state.campaigns.find((entry) => entry.id === item.campaignId)
     const account = state.accounts.find((entry) => entry.id === item.accountId)
-    return renderStandardCard(item.name || "Unnamed rule", formatRuleSubtitle(item, campaign, account, item), item.status, `deleteItem('scheduler-rules','${item.id}')`)
+    return renderStandardCard(item.name || "Unnamed rule", formatRuleSubtitle(item, campaign, account), item.status, `deleteItem('scheduler-rules','${item.id}')`)
   })
 }
 
@@ -1055,6 +1060,28 @@ function renderTelegramGroupPicker(items) {
   setText("telegram-group-selection-note", buildTelegramSelectionNote(items))
 }
 
+function renderSchedulerTargetPicker(items) {
+  const root = document.getElementById("scheduler-target-picker")
+  if (!root) return
+
+  state.ui.selectedSchedulerGroupIds = state.ui.selectedSchedulerGroupIds.filter((id) => items.some((item) => item.id === id))
+
+  root.innerHTML = items.length
+    ? items.map((item) => `
+      <label class="selection-item">
+        <input type="checkbox" ${state.ui.selectedSchedulerGroupIds.includes(item.id) ? "checked" : ""} onchange="toggleSchedulerTarget('${escapeHtml(item.id)}', this.checked)" />
+        <div class="selection-copy">
+          <strong>${escapeHtml(item.name || "Unnamed Telegram channel")}</strong>
+          <span>${escapeHtml(buildTelegramGroupLabel(item))}</span>
+        </div>
+      </label>
+    `).join("")
+    : `<div class="empty-state">No Telegram group/channel saved</div>`
+
+  setText("scheduler-target-summary", buildSchedulerTargetSummary(items))
+  setText("scheduler-target-note", buildSchedulerTargetNote(items))
+}
+
 function renderPlatformCard(item) {
   const total = buildPlatformStats().reduce((sum, entry) => sum + entry.count, 0) || 1
   const width = Math.round((item.count / total) * 100)
@@ -1096,6 +1123,7 @@ function formatRuleSubtitle(rule, campaign, account) {
   const parts = []
   if (campaign?.name) parts.push(`Campaign: ${campaign.name}`)
   if (account?.accountName) parts.push(`Account: ${account.accountName}`)
+  parts.push(`Targets: ${formatSchedulerTargets(rule)}`)
   if (rule.mode === "interval" && rule.intervalMinutes) parts.push(`Every ${rule.intervalMinutes} mins`)
   if (rule.dailyTime) parts.push(`Time ${rule.dailyTime}`)
   if (rule.allDays) {
@@ -1108,7 +1136,19 @@ function formatRuleSubtitle(rule, campaign, account) {
   if (rule.batchSize) parts.push(`Batch ${rule.batchSize}`)
   if (rule.dispatchIntervalSeconds) parts.push(`Gap ${rule.dispatchIntervalSeconds}s`)
   if (rule.randomDelaySeconds) parts.push(`Delay ${rule.randomDelaySeconds}s`)
+  if (rule.nextRunAt) parts.push(`Next ${formatDate(rule.nextRunAt)}`)
+  if (rule.lastRunAt) parts.push(`Last ${formatDate(rule.lastRunAt)}`)
   return parts.join(" | ") || "Scheduler rule"
+}
+
+function formatSchedulerTargets(rule) {
+  const names = Array.isArray(rule.targetGroups) && rule.targetGroups.length
+    ? rule.targetGroups.map((item) => item.name || item.telegramPeer || item.inviteLink).filter(Boolean)
+    : []
+  const ids = Array.isArray(rule.targetGroupIds) ? rule.targetGroupIds : []
+  if (names.length) return names.length <= 3 ? names.join(", ") : `${names.slice(0, 3).join(", ")} +${names.length - 3} more`
+  if (ids.length) return `${ids.length} selected channels`
+  return "All Telegram channels"
 }
 
 function formatTicketMeta(ticket) {
@@ -1805,6 +1845,7 @@ function removeItemFromState(collection, id) {
   if (collection === "groups") {
     state.ui.selectedGroupIds = state.ui.selectedGroupIds.filter((itemId) => itemId !== id)
     state.ui.selectedTelegramGroupIds = state.ui.selectedTelegramGroupIds.filter((itemId) => itemId !== id)
+    state.ui.selectedSchedulerGroupIds = state.ui.selectedSchedulerGroupIds.filter((itemId) => itemId !== id)
   }
 }
 
@@ -1821,8 +1862,26 @@ function buildTelegramSelectionNote(items) {
   return `${selectedCount} Telegram channels selected for posting.`
 }
 
+function buildSchedulerTargetSummary(items) {
+  const count = state.ui.selectedSchedulerGroupIds.length
+  if (!count) return "All channels"
+  if (count === 1) return "1 channel selected"
+  return `${count} channels selected`
+}
+
+function buildSchedulerTargetNote(items) {
+  const selectedCount = state.ui.selectedSchedulerGroupIds.length
+  if (!items.length) return "Save Telegram channels first, then choose scheduler targets."
+  if (!selectedCount) return `${items.length} Telegram channels available. Scheduler will use all channels.`
+  return `${selectedCount} Telegram channels selected for this schedule.`
+}
+
 function getSelectedTelegramGroupIds() {
   return [...state.ui.selectedTelegramGroupIds]
+}
+
+function getSelectedSchedulerGroupIds() {
+  return [...state.ui.selectedSchedulerGroupIds]
 }
 
 function toggleGroupSelection(id, checked) {
@@ -1922,6 +1981,19 @@ function toggleAllTelegramTargets(checked) {
   renderTelegram()
 }
 
+function toggleSchedulerTarget(id, checked) {
+  state.ui.selectedSchedulerGroupIds = checked
+    ? uniqueIds([...state.ui.selectedSchedulerGroupIds, id])
+    : state.ui.selectedSchedulerGroupIds.filter((item) => item !== id)
+  renderScheduler()
+}
+
+function toggleAllSchedulerTargets(checked) {
+  const telegramIds = state.groups.filter((item) => item.platform === "telegram").map((item) => item.id)
+  state.ui.selectedSchedulerGroupIds = checked ? telegramIds : []
+  renderScheduler()
+}
+
 function uniqueIds(items = []) {
   return [...new Set(items.filter(Boolean))]
 }
@@ -1949,3 +2021,5 @@ window.deleteSelectedGroups = deleteSelectedGroups
 window.deleteAllGroups = deleteAllGroups
 window.toggleTelegramTarget = toggleTelegramTarget
 window.toggleAllTelegramTargets = toggleAllTelegramTargets
+window.toggleSchedulerTarget = toggleSchedulerTarget
+window.toggleAllSchedulerTargets = toggleAllSchedulerTargets
