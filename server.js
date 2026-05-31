@@ -122,8 +122,8 @@ function initializeCloudStore() {
             privateKey: privateKey.replace(/\\n/g, "\n"),
           }),
         })
-      } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.FIREBASE_CONFIG || projectId) {
-        firebaseAdmin.initializeApp(projectId ? { projectId } : undefined)
+      } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.FIREBASE_CONFIG) {
+        firebaseAdmin.initializeApp()
       } else {
         return null
       }
@@ -280,7 +280,11 @@ async function writeStore(store) {
   }
 
   if (CLOUD_STORE_REF) {
-    await CLOUD_STORE_REF.set(normalized)
+    try {
+      await CLOUD_STORE_REF.set(normalized)
+    } catch (error) {
+      console.warn("Cloud store write failed, using local store only:", error.message)
+    }
   } else if (process.env.VERCEL) {
     writeLocalStore(normalized)
   }
