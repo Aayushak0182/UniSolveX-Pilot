@@ -544,6 +544,8 @@ body.auth-locked .app-shell {
 }
 
 .status-badge.high,
+.status-badge.failed,
+.status-badge.error,
 .status-badge.closed,
 .status-badge.inactive,
 .status-badge.won,

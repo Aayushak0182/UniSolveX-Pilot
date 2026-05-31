@@ -757,7 +757,7 @@ function renderDashboard() {
   const activeCampaigns = state.campaigns.filter((item) => item.status === "active").length
   const scheduledPosts = state.schedulerRules.filter((item) => item.status !== "archived").length
   const connectedGroups = state.groups.length
-  const failedLogs = state.logs.filter((item) => item.status === "failed").length
+  const failedLogs = state.logs.filter((item) => ["failed", "error"].includes(item.status)).length
   const successLogs = state.logs.filter((item) => item.status === "success").length
   const successRate = successLogs + failedLogs === 0 ? 0 : Math.round((successLogs / (successLogs + failedLogs)) * 100)
 
@@ -1058,10 +1058,11 @@ function renderTelegramGroupPicker(items) {
 function renderPlatformCard(item) {
   const total = buildPlatformStats().reduce((sum, entry) => sum + entry.count, 0) || 1
   const width = Math.round((item.count / total) * 100)
+  const label = item.count === 1 ? "mapped channel" : "mapped channels"
   return `
     <div class="stack-item">
       <strong>${escapeHtml(capitalize(item.platform))}</strong>
-      <small>${item.count} mapped entities</small>
+      <small>${item.count} ${label}</small>
       <div class="platform-bar"><span style="width:${width}%"></span></div>
     </div>
   `
@@ -1120,7 +1121,7 @@ function formatTicketMeta(ticket) {
 
 function buildPlatformStats() {
   const counts = {}
-  for (const item of [...state.accounts, ...state.groups]) {
+  for (const item of state.groups) {
     const platform = item.platform || "other"
     counts[platform] = (counts[platform] || 0) + 1
   }

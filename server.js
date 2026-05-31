@@ -70,10 +70,12 @@ const requestListener = async (req, res) => {
 }
 
 const server = http.createServer(requestListener)
+let schedulerLoopRunning = false
 
 if (require.main === module) {
   server.listen(PORT, () => {
     console.log(`UniSolveX Pilot server running on http://localhost:${PORT}`)
+    startServerSchedulerLoop()
   })
 }
 
@@ -491,13 +493,13 @@ function buildDashboard(store) {
   const activeCampaigns = store.campaigns.filter((item) => item.status === "active").length
   const scheduledPosts = store.schedulerRules.filter((item) => item.status !== "archived").length
   const connectedGroups = store.groups.length
-  const failedLogs = store.logs.filter((item) => item.status === "failed").length
+  const failedLogs = store.logs.filter((item) => ["failed", "error"].includes(item.status)).length
   const successLogs = store.logs.filter((item) => item.status === "success").length
   const successRate =
     successLogs + failedLogs === 0 ? 0 : Math.round((successLogs / (successLogs + failedLogs)) * 100)
 
   const platformCounts = {}
-  for (const item of [...store.accounts, ...store.groups]) {
+  for (const item of store.groups) {
     const platform = item.platform || "other"
     platformCounts[platform] = (platformCounts[platform] || 0) + 1
   }
@@ -833,6 +835,29 @@ function calculateNextRunAt(rule, now = new Date()) {
   return next.toISOString()
 }
 
+async function runSchedulerTick() {
+  if (schedulerLoopRunning) return 0
+  schedulerLoopRunning = true
+
+  try {
+    const store = await readStore()
+    const processedCount = await processDueSchedulerRules(store)
+    await writeStore(store)
+    return processedCount
+  } catch (error) {
+    console.warn("Scheduler loop failed:", error.message)
+    return 0
+  } finally {
+    schedulerLoopRunning = false
+  }
+}
+
+function startServerSchedulerLoop() {
+  runSchedulerTick()
+  clearInterval(startServerSchedulerLoop.timer)
+  startServerSchedulerLoop.timer = setInterval(runSchedulerTick, 60000)
+}
+
 async function processDueSchedulerRules(store) {
   const now = new Date()
   let processedCount = 0
@@ -844,13 +869,44 @@ async function processDueSchedulerRules(store) {
     const message = createSchedulerMessage(store, rule)
     const targets = getSchedulerTargets(store, rule)
 
-    if (!account || !account.sessionString || !message || !targets.length) continue
+    if (!account) {
+      addLog(store, { type: "scheduler", status: "failed", message: `Scheduled post skipped for ${rule.name || "Unnamed rule"}: Telegram account not found`, meta: { ruleId: rule.id } })
+      rule.lastRunAt = new Date().toISOString()
+      rule.nextRunAt = calculateNextRunAt(rule, new Date())
+      continue
+    }
+
+    if (!account.sessionString) {
+      addLog(store, { type: "scheduler", status: "failed", message: `Scheduled post skipped for ${rule.name || "Unnamed rule"}: Telegram account is not connected`, meta: { ruleId: rule.id, accountId: account.id } })
+      rule.lastRunAt = new Date().toISOString()
+      rule.nextRunAt = calculateNextRunAt(rule, new Date())
+      continue
+    }
+
+    if (!message) {
+      addLog(store, { type: "scheduler", status: "failed", message: `Scheduled post skipped for ${rule.name || "Unnamed rule"}: campaign/template message is empty`, meta: { ruleId: rule.id } })
+      rule.lastRunAt = new Date().toISOString()
+      rule.nextRunAt = calculateNextRunAt(rule, new Date())
+      continue
+    }
+
+    if (!targets.length) {
+      addLog(store, { type: "scheduler", status: "failed", message: `Scheduled post skipped for ${rule.name || "Unnamed rule"}: no Telegram channels found`, meta: { ruleId: rule.id } })
+      rule.lastRunAt = new Date().toISOString()
+      rule.nextRunAt = calculateNextRunAt(rule, new Date())
+      continue
+    }
 
     const client = await createTelegramClient(account.sessionString, account)
+    let sentCount = 0
+    let failedCount = 0
     try {
       await client.connect()
       if (!await client.isUserAuthorized()) {
         account.sessionStatus = "expired"
+        addLog(store, { type: "scheduler", status: "failed", message: `Scheduled post failed for ${rule.name || "Unnamed rule"}: Telegram session expired`, meta: { ruleId: rule.id, accountId: account.id } })
+        rule.lastRunAt = new Date().toISOString()
+        rule.nextRunAt = calculateNextRunAt(rule, new Date())
         continue
       }
 
@@ -862,6 +918,7 @@ async function processDueSchedulerRules(store) {
           const entity = await resolveTelegramTargetEntity(client, targetPeer)
           await client.sendMessage(entity, { message })
           processedCount += 1
+          sentCount += 1
 
           store.telegramDispatches = store.telegramDispatches || []
           store.telegramDispatches.unshift({
@@ -881,9 +938,10 @@ async function processDueSchedulerRules(store) {
           })
         } catch (error) {
           const failure = describeTelegramSendError(error, targetPeer)
+          failedCount += 1
           addLog(store, {
             type: "telegram",
-            status: "error",
+            status: "failed",
             message: `Scheduled post failed for ${targetPeer}`,
             meta: { ruleId: rule.id, targetPeer, telegramCode: failure.telegramCode, detail: failure.error },
           })
@@ -900,8 +958,15 @@ async function processDueSchedulerRules(store) {
       rule.nextRunAt = calculateNextRunAt(rule, new Date())
       rule.lastGroupCursor = ((Number(rule.lastGroupCursor) || 0) + targets.length) % Math.max(store.groups.filter((item) => item.platform === "telegram").length, 1)
       rule.status = "running"
-      account.telegramLastPostedAt = new Date().toISOString()
-      addLog(store, { type: "scheduler", status: "success", message: `Scheduled batch posted for ${rule.name || "Unnamed rule"}`, meta: { ruleId: rule.id, count: targets.length } })
+      if (sentCount) account.telegramLastPostedAt = new Date().toISOString()
+      addLog(store, {
+        type: "scheduler",
+        status: sentCount ? "success" : "failed",
+        message: sentCount
+          ? `Scheduled batch posted for ${rule.name || "Unnamed rule"}: ${sentCount} sent${failedCount ? `, ${failedCount} failed` : ""}`
+          : `Scheduled batch failed for ${rule.name || "Unnamed rule"}`,
+        meta: { ruleId: rule.id, sentCount, failedCount, targetCount: targets.length },
+      })
     } finally {
       await safelyDisconnectTelegramClient(client)
     }
