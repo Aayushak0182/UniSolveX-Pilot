@@ -2,6 +2,12 @@ const http = require("http")
 const fs = require("fs")
 const path = require("path")
 const { URL } = require("url")
+let firebaseAdmin = null
+try {
+  firebaseAdmin = require("firebase-admin")
+} catch (error) {
+  firebaseAdmin = null
+}
 const { TelegramClient, Api } = require("telegram")
 const { StringSession } = require("telegram/sessions")
 const WEEK_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -14,6 +20,7 @@ const DATA_DIR = resolveDataDir()
 const STORE_FILE = path.join(DATA_DIR, "store.json")
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ""
 const ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL || "")
+const CLOUD_STORE_REF = initializeCloudStore()
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -28,6 +35,7 @@ const COLLECTION_MAP = {
   "scheduler-rules": "schedulerRules",
   accounts: "accounts",
   groups: "groups",
+  "telegram-dispatches": "telegramDispatches",
   templates: "templates",
   media: "mediaItems",
   "ai-drafts": "aiDrafts",
@@ -89,6 +97,42 @@ function loadEnvFile(filePath) {
     const rawValue = trimmed.slice(eqIndex + 1).trim()
     if (!key || process.env[key]) continue
     process.env[key] = rawValue.replace(/^['"]|['"]$/g, "")
+  }
+}
+
+function initializeCloudStore() {
+  if (!firebaseAdmin) return null
+
+  try {
+    if (!firebaseAdmin.apps.length) {
+      const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_SERVICE_ACCOUNT_JSON || ""
+      const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || ""
+      const privateKey = process.env.FIREBASE_PRIVATE_KEY || ""
+      const projectId = process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || ""
+
+      if (serviceAccountJson) {
+        firebaseAdmin.initializeApp({
+          credential: firebaseAdmin.credential.cert(JSON.parse(serviceAccountJson)),
+        })
+      } else if (clientEmail && privateKey && projectId) {
+        firebaseAdmin.initializeApp({
+          credential: firebaseAdmin.credential.cert({
+            projectId,
+            clientEmail,
+            privateKey: privateKey.replace(/\\n/g, "\n"),
+          }),
+        })
+      } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.FIREBASE_CONFIG || projectId) {
+        firebaseAdmin.initializeApp(projectId ? { projectId } : undefined)
+      } else {
+        return null
+      }
+    }
+
+    return firebaseAdmin.firestore().collection("server_workspace").doc("default")
+  } catch (error) {
+    console.warn("Cloud store disabled:", error.message)
+    return null
   }
 }
 
@@ -191,17 +235,59 @@ function ensureStore() {
   }
 
   if (!fs.existsSync(STORE_FILE)) {
-    writeStore(createDefaultStore())
+    writeLocalStore(createDefaultStore())
     return
   }
 
-  const normalized = readStore()
-  writeStore(normalized)
+  writeLocalStore(readLocalStore())
 }
 
-function readStore() {
+function readLocalStore() {
+  const parsed = fs.existsSync(STORE_FILE) ? JSON.parse(fs.readFileSync(STORE_FILE, "utf8")) : {}
+  return normalizeStore(parsed)
+}
+
+function writeLocalStore(store) {
+  fs.writeFileSync(STORE_FILE, JSON.stringify(normalizeStore(store), null, 2))
+}
+
+async function readStore() {
+  const localStore = readLocalStore()
+
+  if (!CLOUD_STORE_REF) {
+    return localStore
+  }
+
+  try {
+    const snapshot = await CLOUD_STORE_REF.get()
+    if (!snapshot.exists) {
+      await CLOUD_STORE_REF.set(localStore)
+      return localStore
+    }
+
+    return normalizeStore(snapshot.data() || {})
+  } catch (error) {
+    console.warn("Cloud store read failed, using local fallback:", error.message)
+    return localStore
+  }
+}
+
+async function writeStore(store) {
+  const normalized = normalizeStore(store)
+
+  if (!process.env.VERCEL) {
+    writeLocalStore(normalized)
+  }
+
+  if (CLOUD_STORE_REF) {
+    await CLOUD_STORE_REF.set(normalized)
+  } else if (process.env.VERCEL) {
+    writeLocalStore(normalized)
+  }
+}
+
+function normalizeStore(parsed = {}) {
   const defaults = createDefaultStore()
-  const parsed = JSON.parse(fs.readFileSync(STORE_FILE, "utf8"))
 
   return {
     ...defaults,
@@ -221,10 +307,6 @@ function readStore() {
     supportTickets: Array.isArray(parsed.supportTickets) ? parsed.supportTickets : [],
     logs: Array.isArray(parsed.logs) ? parsed.logs : [],
   }
-}
-
-function writeStore(store) {
-  fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2))
 }
 
 function pickDefined(object) {
@@ -825,7 +907,7 @@ async function processDueSchedulerRules(store) {
 }
 
 async function handleApi(req, res, url) {
-  const store = readStore()
+  const store = await readStore()
   const requester = getRequester(req, store)
 
     if (req.method === "GET" && url.pathname === "/api/bootstrap") {
@@ -882,7 +964,7 @@ async function handleApi(req, res, url) {
       message: `AI draft generated for ${draft.topic || "new topic"}`,
       meta: { draftId: draft.id, provider: draft.provider },
     })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, draft)
     return
   }
@@ -908,7 +990,7 @@ async function handleApi(req, res, url) {
       message: `Campaign created: ${record.name || "Untitled campaign"}`,
       meta: { campaignId: record.id },
     })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, record)
     return
   }
@@ -945,14 +1027,14 @@ async function handleApi(req, res, url) {
     }
     store.schedulerRules.unshift(record)
     addLog(store, { type: "scheduler", status: "success", message: `Scheduler rule saved: ${record.name || "Unnamed rule"}` })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, record)
     return
   }
 
   if (req.method === "POST" && url.pathname === "/api/scheduler/run-due") {
     const processedCount = await processDueSchedulerRules(store)
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 200, { ok: true, processedCount })
     return
   }
@@ -979,7 +1061,7 @@ async function handleApi(req, res, url) {
     }
     store.accounts.unshift(record)
     addLog(store, { type: "account", status: "success", message: `Account connected: ${record.accountName || "new account"}` })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, sanitizeAccountForClient(record))
     return
   }
@@ -1013,7 +1095,7 @@ async function handleApi(req, res, url) {
       })
     }
 
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 200, { ok: true, restoredCount: accounts.length })
     return
   }
@@ -1041,7 +1123,7 @@ async function handleApi(req, res, url) {
     mergeCollection("templates", payload.templates)
     mergeCollection("accounts", payload.accounts)
 
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 200, { ok: true })
     return
   }
@@ -1060,7 +1142,7 @@ async function handleApi(req, res, url) {
     }
     store.groups.unshift(record)
     addLog(store, { type: "group", status: "success", message: `Group connected: ${record.name || "new group"}` })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, sanitizeGroupForClient(record))
     return
   }
@@ -1084,7 +1166,7 @@ async function handleApi(req, res, url) {
     }
 
     addLog(store, { type: "groups", status: "info", message: `${deletedCount} groups deleted`, meta: { ids } })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 200, { ok: true, deletedCount })
     return
   }
@@ -1100,7 +1182,7 @@ async function handleApi(req, res, url) {
     }
     store.templates.unshift(record)
     addLog(store, { type: "template", status: "success", message: `Template saved: ${record.title || "new template"}` })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, record)
     return
   }
@@ -1124,7 +1206,7 @@ async function handleApi(req, res, url) {
       await client.connect()
       if (account.sessionString && await client.isUserAuthorized()) {
         account.sessionStatus = "connected"
-        writeStore(store)
+        await writeStore(store)
         sendJson(res, 200, { ok: true, status: "connected", detail: "Telegram account is already connected.", telegramState: buildTelegramState(account) })
         return
       }
@@ -1134,9 +1216,9 @@ async function handleApi(req, res, url) {
       account.pendingPhoneCodeHash = sentCode.phoneCodeHash
       account.pendingPhoneNumber = account.phoneNumber
       account.sessionStatus = "code_sent"
-      writeStore(store)
+      await writeStore(store)
       addLog(store, { type: "telegram", status: "success", message: `Telegram login code sent for ${account.accountName || account.phoneNumber}` })
-      writeStore(store)
+      await writeStore(store)
       sendJson(res, 200, {
         ok: true,
         status: "code_sent",
@@ -1208,7 +1290,7 @@ async function handleApi(req, res, url) {
         account.accountName = profile.firstName
       }
       addLog(store, { type: "telegram", status: "success", message: `Telegram account verified: ${account.accountName || account.phoneNumber}` })
-      writeStore(store)
+      await writeStore(store)
       sendJson(res, 200, { ok: true, status: "connected", account: sanitizeAccountForClient(account), telegramState: buildTelegramState(account) })
       return
     } finally {
@@ -1248,7 +1330,7 @@ async function handleApi(req, res, url) {
       await client.connect()
       if (!await client.isUserAuthorized()) {
         account.sessionStatus = "expired"
-        writeStore(store)
+        await writeStore(store)
         sendJson(res, 401, { error: "Telegram session expired. Reconnect the account and try again." })
         return
       }
@@ -1265,11 +1347,29 @@ async function handleApi(req, res, url) {
           message: `Telegram message failed for ${targetPeer}`,
           meta: { accountId: account.id, groupId: payload.groupId || "", telegramCode: failure.telegramCode, detail: failure.error },
         })
-        writeStore(store)
+        await writeStore(store)
         sendJson(res, failure.statusCode, { error: failure.error, telegramCode: failure.telegramCode })
         return
       }
       account.telegramLastPostedAt = new Date().toISOString()
+      const dispatch = {
+        id: generateId("tg"),
+        accountId: account.id,
+        accountName: account.accountName || "",
+        campaignId: payload.campaignId || "",
+        campaignName: store.campaigns.find((item) => item.id === payload.campaignId)?.name || "",
+        templateId: payload.templateId || "",
+        templateTitle: store.templates.find((item) => item.id === payload.templateId)?.title || "",
+        groupId: payload.groupId || "",
+        groupName: group?.name || "",
+        message,
+        targetPeer,
+        messageId: result?.id || "",
+        status: "sent",
+        createdAt: new Date().toISOString(),
+      }
+      store.telegramDispatches = store.telegramDispatches || []
+      store.telegramDispatches.unshift(dispatch)
       addLog(store, {
         type: "telegram",
         status: "success",
@@ -1282,8 +1382,8 @@ async function handleApi(req, res, url) {
           messageId: result?.id || "",
         },
       })
-      writeStore(store)
-      sendJson(res, 200, { ok: true, targetPeer, messageId: result?.id || null })
+      await writeStore(store)
+      sendJson(res, 200, { ok: true, targetPeer, messageId: result?.id || null, dispatch })
       return
     } finally {
       await safelyDisconnectTelegramClient(client)
@@ -1301,7 +1401,7 @@ async function handleApi(req, res, url) {
     }
     store.mediaItems.unshift(record)
     addLog(store, { type: "media", status: "success", message: `Media item added: ${record.name || "new media"}` })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, record)
     return
   }
@@ -1319,7 +1419,7 @@ async function handleApi(req, res, url) {
     }
     store.leads.unshift(record)
     addLog(store, { type: "lead", status: "success", message: `Lead added: ${record.name || "new lead"}` })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, record)
     return
   }
@@ -1336,7 +1436,7 @@ async function handleApi(req, res, url) {
     }
     store.inboxMessages.unshift(record)
     addLog(store, { type: "inbox", status: "success", message: `Inbox message added from ${record.sender || "new sender"}` })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, record)
     return
   }
@@ -1356,7 +1456,7 @@ async function handleApi(req, res, url) {
     store.teamMembers = store.teamMembers.filter((item) => normalizeEmail(item.email) !== record.email)
     store.teamMembers.unshift(record)
     addLog(store, { type: "team", status: "success", message: `Team member added: ${record.name || "new member"}` })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, record)
     return
   }
@@ -1376,7 +1476,7 @@ async function handleApi(req, res, url) {
     }
     store.supportTickets.unshift(record)
     addLog(store, { type: "support", status: "success", message: `Support ticket created: ${record.subject || "new ticket"}` })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 201, record)
     return
   }
@@ -1396,7 +1496,7 @@ async function handleApi(req, res, url) {
     ticket.updatedBy = requester.email || ticket.updatedBy || ""
     ticket.updatedAt = new Date().toISOString()
     addLog(store, { type: "support", status: "success", message: `Ticket updated: ${ticket.subject || "ticket"}` })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 200, ticket)
     return
   }
@@ -1426,7 +1526,7 @@ async function handleApi(req, res, url) {
       ]),
     })
     addLog(store, { type: "settings", status: "success", message: "Workspace settings updated" })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 200, store.settings)
     return
   }
@@ -1448,7 +1548,7 @@ async function handleApi(req, res, url) {
       return
     }
     addLog(store, { type: collection, status: "info", message: `${collection} item deleted`, meta: { itemId } })
-    writeStore(store)
+    await writeStore(store)
     sendJson(res, 200, { ok: true })
     return
   }
